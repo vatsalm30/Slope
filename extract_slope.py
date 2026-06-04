@@ -67,13 +67,19 @@ def process_fixed_altitude(scene, terrain, cameras, name):
     bp_good = ground_pts[ok]
     cam_good = cameras[ok]
     print(f"  Cameras used: {ok.sum()}/{len(cameras)}")
+    if ok.sum() < 2:
+        print("  Not enough cameras for slope estimation, skipping.")
+        return None, None, None, None
 
     fd = _flight_dir(cam_good[:, [0, 2]])
     s = (bp_good[:, [0, 2]] - bp_good[:, [0, 2]].mean(0)) @ fd
     slope_overall = np.degrees(np.arctan(abs(np.polyfit(s, bp_good[:, 1], 1)[0])))
-    print(f"Overall slope : {slope_overall:.2f}°  [fixed-altitude / ground-distance method]")
+    # +Y=down in VGGT: Y increasing along flight = terrain descends = downhill
+    order = np.argsort(s)
+    direction = "downhill" if bp_good[order[-1], 1] > bp_good[order[0], 1] else "uphill"
+    print(f"Overall slope : {slope_overall:.2f}° {direction}  [fixed-altitude / ground-distance method]")
 
-    return ground_pts, ok, slope_overall, fd
+    return ground_pts, ok, slope_overall, fd, direction
 
 
 def process_fixed_distance(cameras):
@@ -82,15 +88,20 @@ def process_fixed_distance(cameras):
     the terrain slope. Wall is irrelevant — camera height was set physically
     by the drone, not by the point cloud.
     """
+    ok = np.ones(len(cameras), dtype=bool)
+    print(f"  Cameras used: {ok.sum()}/{len(cameras)}")
+    if len(cameras) < 2:
+        print("  Not enough cameras for slope estimation, skipping.")
+        return None, None, None, None
     fd = _flight_dir(cameras[:, [0, 2]])
     s = (cameras[:, [0, 2]] - cameras[:, [0, 2]].mean(0)) @ fd
     order = np.argsort(s)
     cams_ord = cameras[order]
     slope_overall = np.degrees(np.arctan(abs(np.polyfit(s[order], cams_ord[:, 1], 1)[0])))
-    ok = np.ones(len(cameras), dtype=bool)
-    print(f"  Cameras used: {ok.sum()}/{len(cameras)}")
-    print(f"Overall slope : {slope_overall:.2f}°  [fixed-distance / camera-altitude method]")
-    return cameras, ok, slope_overall, fd
+    # +Y=down in VGGT: camera Y increasing along flight = drone descended = downhill
+    direction = "downhill" if cams_ord[-1, 1] > cams_ord[0, 1] else "uphill"
+    print(f"Overall slope : {slope_overall:.2f}° {direction}  [fixed-distance / camera-altitude method]")
+    return cameras, ok, slope_overall, fd, direction
 
 
 def _pairwise(pts, ok, fd):
@@ -148,7 +159,7 @@ def _plot(terrain, cameras, blue_pts, ok, slope_overall, normal, centroid,
     ax3.add_collection3d(Poly3DCollection([[[c[0], c[1], c[2]] for c in corners]],
                          alpha=0.2, facecolor="cyan", edgecolor="cyan", lw=0.5))
     ax3.set_xlabel("X (m)"); ax3.set_ylabel("Z (m)"); ax3.set_zlabel("Y +down (m)")
-    ax3.set_title(f"3-D scene\nOverall slope = {slope_overall:.2f}°", fontsize=10)
+    ax3.set_title(f"3-D scene\nSlope = {slope_overall:.2f}° {direction}", fontsize=10)
     ax3.view_init(elev=20, azim=-60)
     ax3.legend(handles=[
         Line2D([0],[0], color="gold", lw=2, label="gravity lines"),
@@ -186,7 +197,7 @@ def _plot(terrain, cameras, blue_pts, ok, slope_overall, normal, centroid,
     ], fontsize=7)
 
     name = os.path.splitext(os.path.basename(glb_path))[0]
-    plt.suptitle(f"{name} — {subtitle}", fontsize=12, y=1.01)
+    plt.suptitle(f"{name}\n{slope_overall:.2f}° {direction} — {subtitle}", fontsize=11, y=1.01)
     plt.tight_layout()
     plt.savefig(out_png, dpi=150, bbox_inches="tight")
     plt.close()
@@ -206,11 +217,14 @@ def process_glb(glb_path, out_png):
     is_fixed_dist = "fixed_distance" in name
 
     if is_fixed_dist:
-        blue_pts, ok, slope_overall, fd = process_fixed_distance(cameras)
+        blue_pts, ok, slope_overall, fd, direction = process_fixed_distance(cameras)
         subtitle = "fixed-distance / camera-altitude method"
     else:
-        blue_pts, ok, slope_overall, fd = process_fixed_altitude(scene, terrain, cameras, name)
+        blue_pts, ok, slope_overall, fd, direction = process_fixed_altitude(scene, terrain, cameras, name)
         subtitle = "fixed-altitude / ground-distance method"
+
+    if blue_pts is None:
+        return
 
     bp_good = blue_pts[ok]
     centroid = bp_good.mean(0)
