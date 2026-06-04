@@ -151,11 +151,18 @@ def predictions_to_glb(predictions, conf_thres=50.0, show_cam=True,
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def pick_center_image(marker_dir):
+N_PER_MARKER = 3   # first, middle, last image from each marker
+CONF_THRES    = 85.0  # keep top 15% most confident points
+
+
+def pick_images_from_marker(marker_dir):
     imgs = sorted(glob.glob(os.path.join(marker_dir, "*.png")))
     if not imgs:
-        return None
-    return imgs[len(imgs) // 2]
+        return []
+    if len(imgs) == 1:
+        return imgs
+    indices = sorted(set([0, len(imgs) // 2, len(imgs) - 1]))
+    return [imgs[i] for i in indices]
 
 
 def run_scenario(model, device, scenario_path, out_path):
@@ -165,17 +172,21 @@ def run_scenario(model, device, scenario_path, out_path):
     )
     image_names = []
     for marker in markers:
-        img = pick_center_image(os.path.join(scenario_path, marker))
-        if img:
-            image_names.append(img)
+        image_names.extend(pick_images_from_marker(os.path.join(scenario_path, marker)))
 
-    print(f"  {len(image_names)} views: {[os.path.basename(p) for p in image_names]}")
+    print(f"  {len(image_names)} views across {len(markers)} markers")
 
     images = load_and_preprocess_images(image_names).to(device)
     print(f"  Image tensor: {images.shape}")
 
+    dtype = torch.bfloat16 if (device == "cuda" and torch.cuda.get_device_capability()[0] >= 8) else torch.float16 if device == "cuda" else None
+
     with torch.no_grad():
-        predictions = model(images)
+        if dtype is not None:
+            with torch.cuda.amp.autocast(dtype=dtype):
+                predictions = model(images)
+        else:
+            predictions = model(images)
 
     extrinsic, intrinsic = pose_encoding_to_extri_intri(
         predictions["pose_enc"], images.shape[-2:]
@@ -191,7 +202,7 @@ def run_scenario(model, device, scenario_path, out_path):
         predictions["depth"], predictions["extrinsic"], predictions["intrinsic"]
     )
 
-    glb = predictions_to_glb(predictions, conf_thres=50.0, show_cam=True,
+    glb = predictions_to_glb(predictions, conf_thres=CONF_THRES, show_cam=True,
                               prediction_mode="Predicted Pointmap")
     glb.export(out_path)
     print(f"  Saved → {out_path}")
