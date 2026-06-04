@@ -10,7 +10,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 matplotlib.use("Agg")
 
-OUTLIER_THRESH_M = 0.05   # drop cameras with no terrain within 5 cm horizontally
+OUTLIER_THRESH_FRAC = 0.05  # drop cameras whose nearest terrain point is > 5% of scene width away
 
 
 def process_glb(glb_path, out_png):
@@ -25,7 +25,9 @@ def process_glb(glb_path, out_png):
     tree = cKDTree(terrain[:, [0, 2]])
     dists, idxs = tree.query(cameras[:, [0, 2]], k=1)
     blue_pts = terrain[idxs]
-    ok = dists < OUTLIER_THRESH_M
+    scene_width = np.ptp(terrain[:, [0, 2]])
+    outlier_thresh = scene_width * OUTLIER_THRESH_FRAC
+    ok = dists < outlier_thresh
 
     bp_good  = blue_pts[ok]
     cam_good = cameras[ok]
@@ -119,7 +121,8 @@ def process_glb(glb_path, out_png):
         ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
                  f"{val:.1f}°", ha="center", va="bottom", fontsize=8)
     ax2.legend(fontsize=8)
-    ax2.set_ylim(0, max(pair_slopes) * 1.3 + 1)
+    finite_slopes = [v for v in pair_slopes if np.isfinite(v)]
+    ax2.set_ylim(0, (max(finite_slopes) if finite_slopes else 10) * 1.3 + 1)
 
     name = os.path.splitext(os.path.basename(glb_path))[0]
     plt.suptitle(f"{name} — terrain slope", fontsize=12, y=1.01)

@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import re
 
 import numpy as np
 import trimesh
@@ -163,8 +164,9 @@ def pick_center_image(marker_dir):
 
 def run_scenario(model, device, scenario_path, out_path):
     markers = sorted(
-        d for d in os.listdir(scenario_path)
-        if not d.startswith(".") and os.path.isdir(os.path.join(scenario_path, d))
+        (d for d in os.listdir(scenario_path)
+         if not d.startswith(".") and os.path.isdir(os.path.join(scenario_path, d))),
+        key=lambda x: int(re.search(r'\d+', x).group())
     )
     image_names = []
     for marker in markers:
