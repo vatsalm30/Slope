@@ -230,9 +230,14 @@ def run_glb(model, image_names, out_path):
         else:
             pred = model.inference(image_names)
 
-    depth_np     = pred.depth.cpu().float().numpy()       # (S, H, W) metres
-    extrinsic_np = pred.extrinsics.cpu().float().numpy()  # (S, 3, 4)
-    intrinsic_np = pred.intrinsics.cpu().float().numpy()  # (S, 3, 3)
+    def to_np(x):
+        if hasattr(x, "cpu"):
+            return x.cpu().float().numpy()
+        return np.array(x, dtype=np.float32)
+
+    depth_np     = to_np(pred.depth)       # (S, H, W) metres
+    extrinsic_np = to_np(pred.extrinsics)  # (S, 3, 4)
+    intrinsic_np = to_np(pred.intrinsics)  # (S, 3, 3)
 
     S, H, W = depth_np.shape
     images_np = np.stack([
