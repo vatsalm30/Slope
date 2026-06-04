@@ -151,18 +151,14 @@ def predictions_to_glb(predictions, conf_thres=50.0, show_cam=True,
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-N_PER_MARKER = 3   # first, middle, last image from each marker
-CONF_THRES    = 85.0  # keep top 15% most confident points
+CONF_THRES = 85.0  # keep top 15% most confident points
 
 
-def pick_images_from_marker(marker_dir):
+def pick_center_image(marker_dir):
     imgs = sorted(glob.glob(os.path.join(marker_dir, "*.png")))
     if not imgs:
-        return []
-    if len(imgs) == 1:
-        return imgs
-    indices = sorted(set([0, len(imgs) // 2, len(imgs) - 1]))
-    return [imgs[i] for i in indices]
+        return None
+    return imgs[len(imgs) // 2]
 
 
 def run_scenario(model, device, scenario_path, out_path):
@@ -172,9 +168,11 @@ def run_scenario(model, device, scenario_path, out_path):
     )
     image_names = []
     for marker in markers:
-        image_names.extend(pick_images_from_marker(os.path.join(scenario_path, marker)))
+        img = pick_center_image(os.path.join(scenario_path, marker))
+        if img:
+            image_names.append(img)
 
-    print(f"  {len(image_names)} views across {len(markers)} markers")
+    print(f"  {len(image_names)} views: {[os.path.basename(p) for p in image_names]}")
 
     images = load_and_preprocess_images(image_names).to(device)
     print(f"  Image tensor: {images.shape}")
