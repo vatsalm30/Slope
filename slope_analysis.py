@@ -24,7 +24,6 @@ import sys
 import os
 import numpy as np
 import trimesh
-from scipy.spatial import cKDTree
 import matplotlib
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
