@@ -249,12 +249,13 @@ def _robust_plane(X, Y, Z, iters=3, sigma=2.5):
     A = np.c_[X, Y, np.ones_like(X)]
     mask = np.ones(len(Z), bool)
     coef = np.zeros(3)
+    resid = np.zeros(len(Z))
     for _ in range(iters):
         coef, *_ = np.linalg.lstsq(A[mask], Z[mask], rcond=None)
         resid = A @ coef - Z
         std = resid[mask].std()
         mask = np.abs(resid) < sigma * max(std, 1e-9)
-    return coef  # a, b, c with Z = aX + bY + c
+    return coef, mask, resid  # Z = aX + bY + c; final inlier mask; residuals (all pts)
 
 
 def _travel_direction(frame_path, pair_path):
@@ -280,7 +281,7 @@ def dav3_analysis(frame_paths, frames_dir):
     model = DepthAnything3.from_pretrained(DA3_MODEL_ID).to(device)
     model.eval()
 
-    slopes, signed_grads = [], []
+    slopes, signed_grads, roughs, infracs = [], [], [], []
     for fp in frame_paths:
         with torch.no_grad():
             pred = model.inference([fp])
@@ -305,18 +306,23 @@ def dav3_analysis(frame_paths, frames_dir):
         D = depth[vs, us]
         X = (us - cx) / fx * D          # +X right
         Y = (vs - cy) / fy * D          # +Y down (image), horizontal in world
-        a, b, _ = _robust_plane(X, Y, D)
+        (a, b, _), inliers, resid = _robust_plane(X, Y, D)
 
         slope = float(np.degrees(np.arctan(np.hypot(a, b))))
+        rough = float(np.median(np.abs(resid)) / max(np.median(D), 1e-9))
+        infrac = float(inliers.mean())
         slopes.append(slope)
+        roughs.append(rough)
+        infracs.append(infrac)
 
         pair = os.path.join(frames_dir, "pairs",
                             os.path.basename(fp).replace(".jpg", "_p.jpg"))
         u = _travel_direction(fp, pair) if os.path.exists(pair) else None
-        if u is not None:
-            signed_grads.append(a * u[0] + b * u[1])   # +ve: deeper ahead = downhill
+        # +ve: deeper ahead = downhill; nan when motion estimation failed
+        signed_grads.append(a * u[0] + b * u[1] if u is not None else np.nan)
 
-        print(f"    {os.path.basename(fp)}: {slope:.2f}°")
+        print(f"    {os.path.basename(fp)}: {slope:.2f}°  "
+              f"(rough {rough:.3f}, inliers {infrac:.0%})")
 
     del model
     if device == "cuda":
@@ -325,17 +331,35 @@ def dav3_analysis(frame_paths, frames_dir):
     if not slopes:
         return None
     slopes = np.array(slopes)
-    med = float(np.median(slopes))
-    mad = float(np.median(np.abs(slopes - med)))
-    if signed_grads:
-        down_votes = int(np.sum(np.array(signed_grads) > 0))
-        direction = "downhill" if down_votes > len(signed_grads) / 2 else "uphill"
-        dir_note = f"{direction} ({down_votes}/{len(signed_grads)} frames agree)"
+    roughs = np.array(roughs)
+    infracs = np.array(infracs)
+    signed_grads = np.array(signed_grads)
+
+    # ── quality gate: drop frames with rough / fragmented plane fits (trees) ──
+    rough_thresh = max(2.5 * np.median(roughs), 0.005)
+    good = (roughs < rough_thresh) & (infracs > 0.6)
+    if good.sum() < 3:
+        print("  Quality gate left <3 frames — keeping all frames instead.")
+        good = np.ones(len(slopes), bool)
+    rejected = np.where(~good)[0]
+    if len(rejected):
+        print(f"  Quality gate: kept {good.sum()}/{len(slopes)} frames "
+              f"(rejected: {', '.join(map(str, rejected))})")
+
+    med = float(np.median(slopes[good]))
+    mad = float(np.median(np.abs(slopes[good] - med)))
+
+    votes = signed_grads[good]
+    votes = votes[np.isfinite(votes)]
+    if len(votes):
+        down_votes = int(np.sum(votes > 0))
+        direction = "downhill" if down_votes > len(votes) / 2 else "uphill"
+        dir_note = f"{direction} ({down_votes}/{len(votes)} clean frames agree)"
     else:
         direction, dir_note = None, "n/a (motion estimation failed)"
 
-    print(f"  Per-frame slope: median {med:.2f}° ± {mad:.2f}° (MAD), direction: {dir_note}")
-    return {"slopes": slopes, "median": med, "mad": mad,
+    print(f"  Per-frame slope (clean frames): median {med:.2f}° ± {mad:.2f}° (MAD), direction: {dir_note}")
+    return {"slopes": slopes, "good": good, "median": med, "mad": mad,
             "direction": direction, "dir_note": dir_note}
 
 
@@ -370,7 +394,12 @@ def visualise(res_a, res_b, video_name, out_png):
     if res_b is not None:
         ax = axes[col]
         sl = res_b["slopes"]
-        ax.plot(range(len(sl)), sl, "o-", c="steelblue", ms=5)
+        good = res_b.get("good", np.ones(len(sl), bool))
+        idx = np.arange(len(sl))
+        ax.plot(idx[good], sl[good], "o-", c="steelblue", ms=5, label="clean frames")
+        if (~good).any():
+            ax.plot(idx[~good], sl[~good], "x", c="tomato", ms=8,
+                    label="rejected (rough fit — trees)")
         ax.axhline(res_b["median"], color="red", ls="--",
                    label=f"median {res_b['median']:.2f}° ± {res_b['mad']:.2f}°")
         if res_a is not None:
