@@ -217,20 +217,67 @@ def vggt_analysis(frame_paths, out_glb):
         print("  Not enough valid ground samples.")
         return None
 
-    grad = np.polyfit(s_cam[valid], ground_h[valid], 1)[0]
-    slope_deg = float(np.degrees(np.arctan(abs(grad))))
-    # s ordered along flight (frame index increases along flight): orient e1 accordingly
-    flight_sign = np.sign(s_cam[-1] - s_cam[0]) or 1.0
-    direction = "downhill" if grad * flight_sign > 0 else "uphill"
+    flight_sign = float(np.sign(s_cam[-1] - s_cam[0]) or 1.0)
+    s = s_cam * flight_sign          # now increases in flight direction
+    sv, hv = s[valid], ground_h[valid]
 
-    cam_grad = np.polyfit(s_cam, cam_h, 1)[0]
+    # ── detect inflection: compare quadratic vs linear fit ────────────────────
+    coef2 = np.polyfit(sv, hv, 2)
+    coef1 = np.polyfit(sv, hv, 1)
+    resid2 = np.polyval(coef2, sv) - hv
+    resid1 = np.polyval(coef1, sv) - hv
+    r2_linear = 1 - resid1.var() / max(hv.var(), 1e-12)
+    r2_quad   = 1 - resid2.var() / max(hv.var(), 1e-12)
+    quad_improvement = r2_quad - r2_linear
+
+    # vertex of the parabola (candidate inflection point)
+    if abs(coef2[0]) > 1e-12:
+        vertex_s = -coef2[1] / (2 * coef2[0])
+    else:
+        vertex_s = None
+
+    inflection_s = None
+    segments = None
+    if (quad_improvement > 0.05                        # quad fit materially better
+            and vertex_s is not None
+            and sv.min() < vertex_s < sv.max()):       # vertex inside the flight range
+        inflection_s = vertex_s
+        seg1 = valid & (s < inflection_s)
+        seg2 = valid & (s >= inflection_s)
+        if seg1.sum() >= 2 and seg2.sum() >= 2:
+            g1 = np.polyfit(s[seg1], ground_h[seg1], 1)[0]
+            g2 = np.polyfit(s[seg2], ground_h[seg2], 1)[0]
+            sl1 = float(np.degrees(np.arctan(abs(g1))))
+            sl2 = float(np.degrees(np.arctan(abs(g2))))
+            d1  = "downhill" if g1 > 0 else "uphill"
+            d2  = "downhill" if g2 > 0 else "uphill"
+            segments = {"s_split": inflection_s,
+                        "slope1": sl1, "dir1": d1,
+                        "slope2": sl2, "dir2": d2,
+                        "seg1_mask": seg1, "seg2_mask": seg2}
+            print(f"  Inflection detected at s={inflection_s:.3f} "
+                  f"(quad R² gain {quad_improvement:.3f})")
+            print(f"  Segment 1 : {sl1:.2f}° {d1}  ({seg1.sum()} cams)")
+            print(f"  Segment 2 : {sl2:.2f}° {d2}  ({seg2.sum()} cams)")
+
+    # overall linear slope (fallback / summary)
+    grad = coef1[0]
+    slope_deg = float(np.degrees(np.arctan(abs(grad))))
+    direction = "downhill" if grad > 0 else "uphill"
+
+    cam_grad  = np.polyfit(s, cam_h, 1)[0]
     cam_slope = float(np.degrees(np.arctan(abs(cam_grad))))
-    print(f"  Ground slope : {slope_deg:.2f}° {direction}  (cameras used: {valid.sum()}/{len(C)})")
-    print(f"  Camera-path slope: {cam_slope:.2f}° (≈0° ⇒ fixed-altitude flight)")
+    if segments:
+        print(f"  Overall     : {slope_deg:.2f}° avg  |  camera-path {cam_slope:.2f}°")
+    else:
+        print(f"  Ground slope: {slope_deg:.2f}° {direction}  "
+              f"(cameras used: {valid.sum()}/{len(C)})")
+        print(f"  Camera-path slope: {cam_slope:.2f}° (≈0° ⇒ fixed-altitude flight)")
 
     return {
         "slope": slope_deg, "direction": direction, "cam_slope": cam_slope,
-        "s": s_cam * flight_sign, "ground_h": ground_h, "cam_h": cam_h, "valid": valid,
+        "s": s, "ground_h": ground_h, "cam_h": cam_h, "valid": valid,
+        "segments": segments,
     }
 
 
@@ -349,18 +396,52 @@ def dav3_analysis(frame_paths, frames_dir):
     med = float(np.median(slopes[good]))
     mad = float(np.median(np.abs(slopes[good] - med)))
 
+    # ── detect inflection via signed_grads cumulative sum ─────────────────────
+    sg = signed_grads.copy()
+    sg[~good] = np.nan
+    finite_sg = sg[np.isfinite(sg)]
+    segments_b = None
+    if len(finite_sg) >= 4:
+        # smooth signed direction signal and look for a sign change
+        sg_filled = np.where(np.isfinite(sg), sg, 0.0)
+        smooth = np.convolve(sg_filled, np.ones(5) / 5, mode="same")
+        signs = np.sign(smooth)
+        changes = np.where(np.diff(signs) != 0)[0]
+        # only count a change if it persists for at least 3 consecutive frames
+        persistent = [c for c in changes
+                      if abs(smooth[max(0, c-2):c+3]).min() < abs(smooth).max() * 0.8]
+        if persistent:
+            split_idx = persistent[len(persistent) // 2]   # middle transition
+            idx_all = np.where(good)[0]
+            half1 = good.copy(); half1[idx_all[idx_all > split_idx]] = False
+            half2 = good.copy(); half2[idx_all[idx_all <= split_idx]] = False
+            if half1.sum() >= 2 and half2.sum() >= 2:
+                med1 = float(np.median(slopes[half1]))
+                med2 = float(np.median(slopes[half2]))
+                v1 = signed_grads[half1 & np.isfinite(signed_grads)]
+                v2 = signed_grads[half2 & np.isfinite(signed_grads)]
+                d1 = ("downhill" if len(v1) and np.sum(v1 > 0) > len(v1)/2 else "uphill")
+                d2 = ("downhill" if len(v2) and np.sum(v2 > 0) > len(v2)/2 else "uphill")
+                segments_b = {"split_idx": split_idx,
+                              "slope1": med1, "dir1": d1, "mask1": half1,
+                              "slope2": med2, "dir2": d2, "mask2": half2}
+                print(f"  Inflection detected at frame {split_idx}")
+                print(f"  Segment 1: {med1:.2f}° {d1}  ({half1.sum()} clean frames)")
+                print(f"  Segment 2: {med2:.2f}° {d2}  ({half2.sum()} clean frames)")
+
     votes = signed_grads[good]
     votes = votes[np.isfinite(votes)]
     if len(votes):
         down_votes = int(np.sum(votes > 0))
         direction = "downhill" if down_votes > len(votes) / 2 else "uphill"
-        dir_note = f"{direction} ({down_votes}/{len(votes)} clean frames agree)"
+        dir_note = (f"{direction} overall ({down_votes}/{len(votes)} clean frames)"
+                    if segments_b is None else "see segments above")
     else:
         direction, dir_note = None, "n/a (motion estimation failed)"
 
     print(f"  Per-frame slope (clean frames): median {med:.2f}° ± {mad:.2f}° (MAD), direction: {dir_note}")
     return {"slopes": slopes, "good": good, "median": med, "mad": mad,
-            "direction": direction, "dir_note": dir_note}
+            "direction": direction, "dir_note": dir_note, "segments": segments_b}
 
 
 # ── Visualization ──────────────────────────────────────────────────────────────
@@ -377,18 +458,32 @@ def visualise(res_a, res_b, video_name, out_png):
         ax = axes[col]; col += 1
         s, gh, ch, ok = res_a["s"], res_a["ground_h"], res_a["cam_h"], res_a["valid"]
         order = np.argsort(s)
-        ax.plot(s[order], -ch[order], "r*-", ms=8, lw=1, label="camera path")
-        ax.plot(s[order][ok[order]], -gh[order][ok[order]], "o-", c="dodgerblue",
-                ms=6, lw=1.5, label="ground below camera")
-        bad = order[~ok[order]]
-        if len(bad):
-            ax.plot(s[bad], -np.nan_to_num(gh[bad], nan=np.nanmean(gh)), "x",
-                    c="orange", ms=8, label="excluded")
-        ax.set_xlabel("Along-flight distance (VGGT units)")
-        ax.set_ylabel("Height (up)")
-        ax.set_title(f"Path A — VGGT multi-view\n"
+        ax.plot(s[order], -ch[order], "r*-", ms=8, lw=1, label="camera path", alpha=0.5)
+        seg = res_a.get("segments")
+        if seg:
+            m1, m2 = seg["seg1_mask"], seg["seg2_mask"]
+            o1 = np.argsort(s[m1]); o2 = np.argsort(s[m2])
+            ax.plot(s[m1][o1], -gh[m1][o1], "o-", c="dodgerblue", ms=6, lw=1.5,
+                    label=f"seg1 {seg['slope1']:.1f}° {seg['dir1']}")
+            ax.plot(s[m2][o2], -gh[m2][o2], "s-", c="darkorange", ms=6, lw=1.5,
+                    label=f"seg2 {seg['slope2']:.1f}° {seg['dir2']}")
+            ax.axvline(seg["s_split"], color="gray", ls="--", lw=1, label="inflection")
+            title = (f"Path A — VGGT multi-view\n"
+                     f"seg1: {seg['slope1']:.1f}° {seg['dir1']}  |  "
+                     f"seg2: {seg['slope2']:.1f}° {seg['dir2']}")
+        else:
+            ax.plot(s[order][ok[order]], -gh[order][ok[order]], "o-", c="dodgerblue",
+                    ms=6, lw=1.5, label="ground below camera")
+            title = (f"Path A — VGGT multi-view\n"
                      f"{res_a['slope']:.2f}° {res_a['direction']} "
                      f"(camera path: {res_a['cam_slope']:.2f}°)")
+        bad = order[~ok[order]]
+        if len(bad):
+            ax.plot(s[bad], -np.nan_to_num(gh[bad], nan=np.nanmean(gh[ok])), "x",
+                    c="gray", ms=7, label="excluded", alpha=0.5)
+        ax.set_xlabel("Along-flight distance (VGGT units)")
+        ax.set_ylabel("Height (up)")
+        ax.set_title(title)
         ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     if res_b is not None:
@@ -396,18 +491,28 @@ def visualise(res_a, res_b, video_name, out_png):
         sl = res_b["slopes"]
         good = res_b.get("good", np.ones(len(sl), bool))
         idx = np.arange(len(sl))
-        ax.plot(idx[good], sl[good], "o-", c="steelblue", ms=5, label="clean frames")
+        seg_b = res_b.get("segments")
+        if seg_b:
+            m1, m2 = seg_b["mask1"], seg_b["mask2"]
+            ax.plot(idx[m1 & good], sl[m1 & good], "o-", c="dodgerblue", ms=5,
+                    label=f"seg1 {seg_b['slope1']:.1f}° {seg_b['dir1']}")
+            ax.plot(idx[m2 & good], sl[m2 & good], "s-", c="darkorange", ms=5,
+                    label=f"seg2 {seg_b['slope2']:.1f}° {seg_b['dir2']}")
+            ax.axvline(seg_b["split_idx"], color="gray", ls="--", lw=1, label="inflection")
+            title = (f"Path B — DA3 per-frame\n"
+                     f"seg1: {seg_b['slope1']:.1f}° {seg_b['dir1']}  |  "
+                     f"seg2: {seg_b['slope2']:.1f}° {seg_b['dir2']}")
+        else:
+            ax.plot(idx[good], sl[good], "o-", c="steelblue", ms=5, label="clean frames")
+            title = f"Path B — DA3 per-frame depth plane\ndirection: {res_b['dir_note']}"
         if (~good).any():
             ax.plot(idx[~good], sl[~good], "x", c="tomato", ms=8,
-                    label="rejected (rough fit — trees)")
+                    label="rejected (trees)")
         ax.axhline(res_b["median"], color="red", ls="--",
                    label=f"median {res_b['median']:.2f}° ± {res_b['mad']:.2f}°")
-        if res_a is not None:
-            ax.axhline(res_a["slope"], color="green", ls=":",
-                       label=f"VGGT {res_a['slope']:.2f}°")
         ax.set_xlabel("Frame index (along flight)")
         ax.set_ylabel("Slope (°)")
-        ax.set_title(f"Path B — DA3 per-frame depth plane\ndirection: {res_b['dir_note']}")
+        ax.set_title(title)
         ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     plt.suptitle(f"{video_name} — BEV slope estimation", fontsize=13, fontweight="bold")
@@ -446,14 +551,24 @@ def main():
         print(f"\n[3/3] Path B — DA3 per-frame depth")
         res_b = dav3_analysis(frame_paths, frames_dir)
 
-    print(f"\n{'═'*50}")
+    print(f"\n{'═'*55}")
     print(f" BEV slope summary — {stem}")
-    print(f"{'═'*50}")
+    print(f"{'═'*55}")
     if res_a:
-        print(f" Path A (VGGT) : {res_a['slope']:.2f}° {res_a['direction']}")
+        seg = res_a.get("segments")
+        if seg:
+            print(f" Path A (VGGT) : seg1 {seg['slope1']:.2f}° {seg['dir1']}"
+                  f"  →  seg2 {seg['slope2']:.2f}° {seg['dir2']}")
+        else:
+            print(f" Path A (VGGT) : {res_a['slope']:.2f}° {res_a['direction']}")
     if res_b:
-        print(f" Path B (DA3)  : {res_b['median']:.2f}° ± {res_b['mad']:.2f}°, {res_b['dir_note']}")
-    print(f"{'═'*50}")
+        seg_b = res_b.get("segments")
+        if seg_b:
+            print(f" Path B (DA3)  : seg1 {seg_b['slope1']:.2f}° {seg_b['dir1']}"
+                  f"  →  seg2 {seg_b['slope2']:.2f}° {seg_b['dir2']}")
+        else:
+            print(f" Path B (DA3)  : {res_b['median']:.2f}° ± {res_b['mad']:.2f}°, {res_b['dir_note']}")
+    print(f"{'═'*55}")
 
     visualise(res_a, res_b, stem, os.path.join(out_dir, f"{stem}_slope.png"))
 
