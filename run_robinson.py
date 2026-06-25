@@ -37,8 +37,9 @@ import numpy as np
 SLOPE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SLOPE_DIR)
 
-import run_vggt_all as rv          # VGGT model + run_glb live here
 import method1_slope as m1
+# run_vggt_all (torch + vggt) is imported lazily, only when reconstruction is
+# actually needed — so --from-glb / analysis-only runs on machines without a GPU stack.
 
 IMG_EXTS = ("*.png", "*.jpg", "*.jpeg", "*.JPG", "*.PNG")
 
@@ -46,6 +47,7 @@ IMG_EXTS = ("*.png", "*.jpg", "*.jpeg", "*.JPG", "*.PNG")
 def gather_images(folder, markers=False):
     """Return image paths in capture order (1, 2, 3, …)."""
     if markers:
+        import run_vggt_all as rv
         subs = sorted(
             (d for d in os.listdir(folder)
              if os.path.isdir(os.path.join(folder, d)) and not d.startswith(".")),
@@ -59,33 +61,24 @@ def gather_images(folder, markers=False):
     return sorted(set(imgs))
 
 
-def process_dataset(model, folder, markers=False):
-    name = os.path.basename(os.path.normpath(folder))
-    images = gather_images(folder, markers=markers)
-    if len(images) < 2:
-        print(f"  !! {name}: found {len(images)} images, need >=2. Skipping.")
-        return None
-
-    glb_dir = os.path.join(SLOPE_DIR, "output_glbs", "vggt")
+def analyze_glb(glb_path, name, n_images=None):
+    """Method 1 + plots + JSON for one already-reconstructed GLB (no GPU)."""
     res_dir = os.path.join(SLOPE_DIR, "results")
-    os.makedirs(glb_dir, exist_ok=True)
     os.makedirs(res_dir, exist_ok=True)
 
-    glb_path = os.path.join(glb_dir, f"robinson_{name}.glb")
-    print(f"\n[{name}] reconstructing {len(images)} images with VGGT → {os.path.basename(glb_path)}")
-    rv.run_glb(model, images, glb_path)          # all images at once
-
-    r  = m1.analyse(glb_path)
+    r = m1.analyse(glb_path)
     if not r["ok"]:
         print(f"  !! {name}: not enough ground points beneath cameras.")
         return None
+    if n_images is None:
+        n_images = r["n_cams"]
     out_png = os.path.join(res_dir, f"robinson_{name}_method1_segments.png")
     m1.plot_segments(r, out_png)
     m1.plot_profile(r, os.path.join(res_dir, f"robinson_{name}_method1_profile.png"))
 
     rec = {
         "dataset": name, "glb": os.path.basename(glb_path),
-        "n_images": len(images), "n_ground_found": r["n_ground_found"],
+        "n_images": n_images, "n_ground_found": r["n_ground_found"],
         "method1_signed_deg": round(r["overall_signed"], 2),
         "direction": r["direction"], "r2": round(r["r2"], 4),
         "segments": [
@@ -100,20 +93,60 @@ def process_dataset(model, folder, markers=False):
         json.dump(rec, f, indent=2)
 
     print(f"  Method 1 slope: {r['overall_signed']:+.2f}° {r['direction']}  "
-          f"(R²={r['r2']:.3f}, all {r['n_cams']} images)")
+          f"(R²={r['r2']:.3f}, all {r['n_cams']} images, {r['n_ground_found']} ground pts)")
     print(f"  plot → {out_png}")
     if r["r2"] < 0.5:
         print("  ⚠ low R² — reconstruction may lack vertical parallax for this flight.")
     return rec
 
 
+def process_dataset(model, folder, markers=False):
+    name = os.path.basename(os.path.normpath(folder))
+    images = gather_images(folder, markers=markers)
+    if len(images) < 2:
+        print(f"  !! {name}: found {len(images)} images, need >=2. Skipping.")
+        return None
+
+    import run_vggt_all as rv
+    glb_dir = os.path.join(SLOPE_DIR, "output_glbs", "vggt")
+    os.makedirs(glb_dir, exist_ok=True)
+    glb_path = os.path.join(glb_dir, f"robinson_{name}.glb")
+    print(f"\n[{name}] reconstructing {len(images)} images with VGGT → {os.path.basename(glb_path)}")
+    rv.run_glb(model, images, glb_path)          # all images at once
+
+    return analyze_glb(glb_path, name, n_images=len(images))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("path", help="dataset folder, or parent folder with --multi")
-    ap.add_argument("--multi",   action="store_true", help="path holds several dataset subfolders")
-    ap.add_argument("--markers", action="store_true", help="datasets use marker1/.. subfolders")
+    ap.add_argument("path", nargs="?", help="dataset folder, or parent folder with --multi")
+    ap.add_argument("--multi",    action="store_true", help="path holds several dataset subfolders")
+    ap.add_argument("--markers",  action="store_true", help="datasets use marker1/.. subfolders")
+    ap.add_argument("--from-glb", action="store_true",
+                    help="skip VGGT; re-run Method 1 on existing output_glbs/vggt/robinson_*.glb (no GPU)")
     args = ap.parse_args()
 
+    # --from-glb: analysis only, no model — re-derive slopes/plots from existing GLBs
+    if args.from_glb:
+        glb_dir = os.path.join(SLOPE_DIR, "output_glbs", "vggt")
+        glbs = sorted(glob.glob(os.path.join(glb_dir, "robinson_*.glb")))
+        if not glbs:
+            print(f"No robinson_*.glb found in {glb_dir}")
+            return
+        summary = []
+        for g in glbs:
+            name = os.path.splitext(os.path.basename(g))[0][len("robinson_"):]
+            print(f"\n[{name}] re-analyzing {os.path.basename(g)} (no reconstruction)")
+            rec = analyze_glb(g, name)
+            if rec:
+                summary.append(rec)
+        out = os.path.join(SLOPE_DIR, "results", "robinson_summary.json")
+        with open(out, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"\nDone. Summary → {out}")
+        return
+
+    import run_vggt_all as rv
     print(f"Device: {rv.device}, dtype: {rv.dtype}")
     print("Loading VGGT model...")
     model = rv.VGGT()

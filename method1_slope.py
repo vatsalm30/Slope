@@ -32,8 +32,10 @@ import matplotlib.pyplot as plt
 
 matplotlib.use("Agg")
 
-SEARCH_RADIUS_FRAC = 0.08   # ground-search cylinder radius = this fraction of scene width
+SEARCH_RADIUS_FRAC = 0.08   # base ground-search cylinder radius = this fraction of scene width
 GROUND_PERCENTILE  = 90     # 90th-percentile depth = road surface (not wall top)
+MIN_GROUND_PTS     = 50     # widen the cylinder until it holds at least this many points
+MAX_RADIUS_GROWTH  = 10     # ...but never grow the radius beyond this multiple of the base
 
 
 # ── geometry helpers ─────────────────────────────────────────────────────────
@@ -59,9 +61,19 @@ def flight_direction(pts_xz, cameras_xz):
 
 
 def ground_point_below(terrain, camera, radius):
-    """Road surface beneath a camera: 90th-percentile-depth point in a cylinder."""
+    """Road surface beneath a camera: 90th-percentile-depth point in a vertical
+    cylinder. The cylinder starts at `radius` and is widened (x1.5) until it holds
+    at least MIN_GROUND_PTS points, so a camera whose footprint sits just off the
+    densest terrain (e.g. forward-looking frames) still resolves a ground point
+    instead of being dropped. Cameras already over dense terrain are unaffected —
+    the loop exits on the first check."""
     xz_dist = np.linalg.norm(terrain[:, [0, 2]] - camera[[0, 2]], axis=1)
-    nearby  = terrain[xz_dist < radius]
+    max_radius = radius * MAX_RADIUS_GROWTH
+    r = radius
+    nearby = terrain[xz_dist < r]
+    while len(nearby) < MIN_GROUND_PTS and r < max_radius:
+        r *= 1.5
+        nearby = terrain[xz_dist < r]
     if len(nearby) == 0:
         return None
     below = nearby[nearby[:, 1] > camera[1]]    # +Y = down, so "below" = larger Y
