@@ -5,8 +5,14 @@
     "n_images": 5,
     "n_ground_found": 5,
     "method1_signed_deg": 5.65,
-    "direction": "uphill",
-    "r2": 0.9977,
+    "method1_r2": 0.9977,
+    "gps_available": false,
+    "gps_signed_deg": null,
+    "gps_r2": null,
+    "final_signed_deg": -5.65,
+    "direction": "downhill",
+    "sign_source": "folder label",
+    "estimate_basis": "Method 1 magnitude, folder-label sign",
     "segments": [
       {
         "label": "1\u21922",
@@ -40,8 +46,14 @@
     "n_images": 5,
     "n_ground_found": 5,
     "method1_signed_deg": -2.61,
-    "direction": "downhill",
-    "r2": 0.292,
+    "method1_r2": 0.292,
+    "gps_available": true,
+    "gps_signed_deg": 16.3,
+    "gps_r2": 0.9254,
+    "final_signed_deg": 16.3,
+    "direction": "uphill",
+    "sign_source": "GPS",
+    "estimate_basis": "GPS track",
     "segments": [
       {
         "label": "1\u21922",
