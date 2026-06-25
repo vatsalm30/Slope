@@ -37,7 +37,9 @@ import numpy as np
 SLOPE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SLOPE_DIR)
 
+import math
 import method1_slope as m1
+import gps_anchor
 # run_vggt_all (torch + vggt) is imported lazily, only when reconstruction is
 # actually needed — so --from-glb / analysis-only runs on machines without a GPU stack.
 
@@ -61,8 +63,33 @@ def gather_images(folder, markers=False):
     return sorted(set(imgs))
 
 
-def analyze_glb(glb_path, name, n_images=None):
-    """Method 1 + plots + JSON for one already-reconstructed GLB (no GPU)."""
+def _images_folder_for(name):
+    """Best guess at the source images for a robinson_<name>.glb (for GPS)."""
+    cand = os.path.join(SLOPE_DIR, "robinson copy", name)
+    return cand if os.path.isdir(cand) else None
+
+
+def _resolve_sign(r, gps, label):
+    """Decide the final signed slope. Sign comes from GPS if available, else the
+    folder label ('uphill'/'downhill'). Magnitude comes from the GPS track when
+    Method 1's ground-fit is weak (R²<0.5), otherwise from Method 1 — because
+    VGGT's vertical axis is not gravity-locked, so its raw sign is not trusted."""
+    label_sign = (+1 if "up" in label.lower()
+                  else -1 if "down" in label.lower() else None)
+    m1_mag = abs(r["overall_signed"])
+
+    if gps and gps.get("ok"):
+        sign = 1.0 if gps["signed_deg"] >= 0 else -1.0
+        if r["r2"] < 0.5:
+            return gps["signed_deg"], "GPS track", "GPS"
+        return math.copysign(m1_mag, sign), "Method 1 magnitude, GPS sign", "GPS"
+    if label_sign is not None:
+        return label_sign * m1_mag, "Method 1 magnitude, folder-label sign", "folder label"
+    return r["overall_signed"], "Method 1 (sign unverified)", "VGGT (unverified)"
+
+
+def analyze_glb(glb_path, name, n_images=None, images_folder=None):
+    """Method 1 + GPS sign-anchor + plots + JSON for one GLB (no GPU)."""
     res_dir = os.path.join(SLOPE_DIR, "results")
     os.makedirs(res_dir, exist_ok=True)
 
@@ -72,15 +99,38 @@ def analyze_glb(glb_path, name, n_images=None):
         return None
     if n_images is None:
         n_images = r["n_cams"]
+
+    # GPS sign-anchor from the source photos, if we can find them
+    if images_folder is None:
+        images_folder = _images_folder_for(name)
+    gps = None
+    if images_folder:
+        gps = gps_anchor.gps_track_slope(gps_anchor.gather_images(images_folder))
+
+    final_signed, basis, sign_source = _resolve_sign(r, gps, name)
+    final_dir = "uphill" if final_signed >= 0 else "downhill"
+
     out_png = os.path.join(res_dir, f"robinson_{name}_method1_segments.png")
     m1.plot_segments(r, out_png)
     m1.plot_profile(r, os.path.join(res_dir, f"robinson_{name}_method1_profile.png"))
+    if gps and gps.get("ok"):
+        gps_anchor.plot_track(gps, os.path.join(res_dir, f"robinson_{name}_gps_track.png"), name)
 
     rec = {
         "dataset": name, "glb": os.path.basename(glb_path),
         "n_images": n_images, "n_ground_found": r["n_ground_found"],
+        # raw Method 1 (VGGT frame) — kept for transparency
         "method1_signed_deg": round(r["overall_signed"], 2),
-        "direction": r["direction"], "r2": round(r["r2"], 4),
+        "method1_r2": round(r["r2"], 4),
+        # GPS track (gravity-true), if available
+        "gps_available": bool(gps and gps.get("ok")),
+        "gps_signed_deg": round(gps["signed_deg"], 2) if gps and gps.get("ok") else None,
+        "gps_r2": round(gps["r2"], 4) if gps and gps.get("ok") else None,
+        # final reported estimate
+        "final_signed_deg": round(final_signed, 2),
+        "direction": final_dir,
+        "sign_source": sign_source,
+        "estimate_basis": basis,
         "segments": [
             {"label": s["label"],
              "signed_slope": round(s["signed_slope"], 2)
@@ -92,11 +142,12 @@ def analyze_glb(glb_path, name, n_images=None):
     with open(os.path.join(res_dir, f"robinson_{name}_method1.json"), "w") as f:
         json.dump(rec, f, indent=2)
 
-    print(f"  Method 1 slope: {r['overall_signed']:+.2f}° {r['direction']}  "
-          f"(R²={r['r2']:.3f}, all {r['n_cams']} images, {r['n_ground_found']} ground pts)")
-    print(f"  plot → {out_png}")
-    if r["r2"] < 0.5:
-        print("  ⚠ low R² — reconstruction may lack vertical parallax for this flight.")
+    print(f"  Method 1 (VGGT): {r['overall_signed']:+.2f}° (R²={r['r2']:.3f}, {r['n_ground_found']} ground pts)")
+    if gps and gps.get("ok"):
+        print(f"  GPS track      : {gps['signed_deg']:+.2f}° {gps['direction']} (R²={gps['r2']:.3f}, {gps['n_with_gps']} frames)")
+    else:
+        print(f"  GPS track      : none")
+    print(f"  → FINAL        : {final_signed:+.2f}° {final_dir}   [{basis}]")
     return rec
 
 
@@ -114,7 +165,7 @@ def process_dataset(model, folder, markers=False):
     print(f"\n[{name}] reconstructing {len(images)} images with VGGT → {os.path.basename(glb_path)}")
     rv.run_glb(model, images, glb_path)          # all images at once
 
-    return analyze_glb(glb_path, name, n_images=len(images))
+    return analyze_glb(glb_path, name, n_images=len(images), images_folder=folder)
 
 
 def main():

@@ -117,9 +117,9 @@ bullets(tf2, [
     (1, "Method 1 transfers to the Method-2 dataset and works well"),
     (1, "Uphill: +3.7° (Method 2: +3.4°) — close agreement, R²=0.99"),
     (1, "Downhill: −7.9° (Method 2: −4.8°) — right direction, steeper"),
-    (1, "Key finding: Method 1 needs the reconstruction to capture vertical relief"),
-    (1, "It does on terrain-following flights; it does NOT on the level (fixed-altitude) flights — those rebuild nearly flat"),
-    (1, "Robinson: reconstruction script is ready to run on the A100 box"),
+    (1, "Method 1 needs the reconstruction to capture vertical relief (terrain-following flights) — level flights rebuild flat"),
+    (1, "Robinson uphill: +16.3° uphill (GPS-verified); downhill: −5.65° downhill"),
+    (1, "Sign finding: Method 1's up/down sign rides on VGGT's vertical axis, which is NOT gravity-locked — we now anchor the sign to GPS"),
 ], size=17)
 
 # ── 3. How Method 1 works ─────────────────────────────────────────────────────
@@ -257,78 +257,105 @@ pic_fit(s, os.path.join(RES, "happy_hollow_profile.png"), 0.4, 1.55, 6.3, 4.6)
 pic_fit(s, os.path.join(RES, "happy_hollow_method1_segments.png"), 6.7, 1.6, 6.3, 4.4)
 caption(s, "Original 11-view reconstruction: −3.92° downhill, R²=0.99 — Method 1's clean reference case.", 6.35)
 
-# ── 12. Robinson — results if available, else the plan ────────────────────────
+# ── 12. The sign problem + GPS fix ────────────────────────────────────────────
+s = title_only("Fixing the up/down sign — anchor to GPS, not VGGT",
+               "VGGT has no gravity sensor, so its vertical axis (and the slope sign) is not reliable")
+tf = _txt(s, 0.6, 1.35, 6.0, 5.7)
+bullets(tf, [
+    "Method 1 reads slope in VGGT's coordinate frame, assuming +Y = gravity.",
+    "VGGT never measures gravity — it picks an arbitrary frame — so the up/down SIGN can come out backwards.",
+    "Proof on Robinson uphill: the photos carry GPS, and the drone climbed 168.7 → 172.3 m (clearly uphill).",
+    (1, "GPS:      +16.3° uphill  (R²=0.93)"),
+    (1, "Method 1: −2.6°  downhill (R²=0.29)  ✗ wrong sign & noisy"),
+    "Fix: when photos carry GPS, take the sign (and a metric slope) from the GPS track. Otherwise fall back to the known flight label.",
+], size=16)
+prof_gps = os.path.join(RES, "robinson_uphill_gps_track.png")
+if os.path.exists(prof_gps):
+    pic_fit(s, prof_gps, 6.7, 1.5, 6.3, 4.9)
+    caption(s, "Robinson uphill: GPS altitude vs. along-track distance — the gravity-true profile.", 6.5)
+
+# ── 13. Robinson — results ────────────────────────────────────────────────────
 robinson_json = os.path.join(RES, "robinson_summary.json")
 robinson = json.load(open(robinson_json)) if os.path.exists(robinson_json) else []
 
 if robinson:
-    # Results summary table
-    s = title_only("Robinson datasets — Method 1 results", "all images, signed (+ uphill / − downhill)")
-    hdr = ["Dataset", "Images", "Method 1", "R²", "Verdict"]
+    s = title_only("Robinson datasets — results", "all images, signed (+ uphill / − downhill)")
+    hdr = ["Dataset", "Imgs", "Method 1 (VGGT)", "GPS track", "FINAL", "Sign from"]
     rows = [hdr]
     for r in robinson:
-        verdict = "clean signal" if r["r2"] > 0.5 else "low R² — check flight geometry"
-        rows.append([r["dataset"], str(r["n_images"]),
-                     f"{r['method1_signed_deg']:+.2f}°", f"{r['r2']:.3f}", verdict])
-    tbl = s.shapes.add_table(len(rows), 5, Inches(0.6), Inches(1.7),
-                             Inches(12.1), Inches(2.6)).table
-    for i, w in enumerate([4.1, 1.6, 2.0, 1.4, 3.0]): tbl.columns[i].width = Inches(w)
+        m1c = f"{r['method1_signed_deg']:+.2f}° (R²={r['method1_r2']:.2f})"
+        gpsc = (f"{r['gps_signed_deg']:+.2f}° (R²={r['gps_r2']:.2f})"
+                if r.get("gps_available") else "—")
+        finalc = f"{r['final_signed_deg']:+.2f}° {r['direction']}"
+        rows.append([r["dataset"], str(r["n_images"]), m1c, gpsc, finalc, r["sign_source"]])
+    tbl = s.shapes.add_table(len(rows), 6, Inches(0.4), Inches(1.7),
+                             Inches(12.5), Inches(2.4)).table
+    for i, w in enumerate([1.9, 0.9, 3.1, 2.7, 2.3, 1.6]): tbl.columns[i].width = Inches(w)
     for ri, row in enumerate(rows):
         for ci, val in enumerate(row):
             cell = tbl.cell(ri, ci); cell.text = val
             for p in cell.text_frame.paragraphs:
-                p.font.size = Pt(14 if ri else 16); p.font.bold = (ri == 0)
+                p.font.size = Pt(12 if ri else 12); p.font.bold = (ri == 0 or ci == 4)
                 p.font.color.rgb = WHITE if ri == 0 else NAVY
                 if ci == 4 and ri > 0:
-                    p.font.color.rgb = TEAL if "clean" in val else RUST
+                    p.font.color.rgb = TEAL if val.strip().startswith("+") else RUST
             cell.fill.solid()
             cell.fill.fore_color.rgb = NAVY if ri == 0 else (RGBColor(0xED,0xF3,0xF2) if ri % 2 else WHITE)
-    caption(s, "Reconstructed on the A100 box with VGGT; Method 1 applied to all images.", 4.6)
+    tf = _txt(s, 0.5, 4.5, 12.4, 2.6)
+    bullets(tf, [
+        "uphill — iPhone 14 with GPS: drone climbed; FINAL +16.3° uphill from the GPS track (Method 1's ground-fit was too noisy here, R²=0.29).",
+        "downhill — DJI, GPS stripped from the files: Method 1's ground-fit is clean (R²≈1.00), so we keep its 5.65° magnitude and take the sign from the folder label → −5.65° downhill.",
+        "To verify downhill independently, we'd need its flight log / original GPS — flagged for follow-up.",
+    ], size=14)
+    caption(s, "FINAL sign source: GPS where available, otherwise the known flight label. Magnitude: GPS when Method 1's R² is low, else Method 1.", 7.0, size=11)
 
-    # One detail slide per Robinson dataset (profile + per-segment)
+    # One detail slide per Robinson dataset
     for r in robinson:
         nm = r["dataset"]
+        gps_png = os.path.join(RES, f"robinson_{nm}_gps_track.png")
         prof = os.path.join(RES, f"robinson_{nm}_method1_profile.png")
         seg  = os.path.join(RES, f"robinson_{nm}_method1_segments.png")
         s = title_only(f"Robinson — {nm}",
-                       f"{r['method1_signed_deg']:+.2f}°  ({r['direction']}, R²={r['r2']:.3f}, {r['n_images']} images)")
-        if os.path.exists(prof): pic_fit(s, prof, 0.3, 1.55, 6.4, 4.7)
-        if os.path.exists(seg):  pic_fit(s, seg,  6.6, 1.55, 6.4, 4.7)
-        caption(s, "Left: ground elevation vs. along-track distance (the fit).  Right: per-segment slope by image index.", 6.4)
+                       f"FINAL {r['final_signed_deg']:+.2f}° {r['direction']}   "
+                       f"[{r['estimate_basis']}]   ·   {r['n_images']} images")
+        # left: the trusted basis (GPS track if present, else Method 1 profile)
+        left = gps_png if (r.get("gps_available") and os.path.exists(gps_png)) else prof
+        if left and os.path.exists(left): pic_fit(s, left, 0.3, 1.55, 6.4, 4.6)
+        if os.path.exists(seg):           pic_fit(s, seg, 6.6, 1.55, 6.4, 4.6)
+        lcap = ("Left: GPS track (gravity-true)." if r.get("gps_available")
+                else "Left: Method 1 ground-elevation fit.")
+        caption(s, f"{lcap}  Right: Method 1 per-segment slope by image index.", 6.35)
 else:
-    s = title_only("Robinson datasets — ready to run on the A100 box")
+    s = title_only("Robinson datasets — run on the A100 box")
     tf = _txt(s, 0.7, 1.5, 11.9, 5.2)
     bullets(tf, [
-        "The two Robinson datasets need VGGT reconstruction first (GPU step) — that part runs on the A100 machine.",
-        "A script is prepared:  run_robinson.py",
-        (1, "python run_robinson.py \"robinson copy\" --multi"),
-        (1, "Reconstructs all images (1, 2, 3, …) → GLB, then applies Method 1 automatically"),
-        (1, "Outputs signed slope (+ uphill / − downhill), R², and per-segment + profile plots"),
-        "Once the GLBs exist, re-running build_slides.py folds the Robinson results and plots into this deck automatically.",
-        "Expectation: if the Robinson flights observe the terrain at an angle, Method 1 should give a clean slope; if they are level passes, watch for low R² (the flat-rebuild case shown earlier).",
+        "python run_robinson.py \"robinson copy\" --multi      (GPU: reconstruct + analyze)",
+        "python run_robinson.py --from-glb                      (re-analyze existing GLBs, no GPU)",
+        "Each dataset reports Method 1 (VGGT), the GPS-track slope, and a GPS/label-anchored FINAL sign.",
     ], size=17)
 
 # ── 13. Observations ──────────────────────────────────────────────────────────
 s = title_only("Observations & recommendations")
 tf = _txt(s, 0.7, 1.5, 11.9, 5.2)
 bullets(tf, [
-    "Method 1 is genuinely the more general method and transfers to the Method-2 dataset.",
-    "Its reliability tracks R²: trust the slope when R² is high; treat near-zero R² as 'no signal', not 'flat ground'.",
-    "Use all images for the overall fit; consecutive-pair (per-segment) slopes are noisy and can spike — read them as a profile, not point values.",
-    "For best Method-1 results, prefer flights with vertical parallax (terrain-following or oblique), not pure level passes.",
-    "On downhill fixed_distance2ground, Method 1 reads steeper than Method 2 (−7.9° vs −4.8°); worth checking which is closer to ground truth when available.",
-], size=18)
+    "Method 1 estimates slope MAGNITUDE well when R² is high — but its up/down SIGN is unreliable, because VGGT's vertical axis is not gravity-locked.",
+    "Always anchor the sign to a gravity-true reference: GPS altitude is ideal (we proved it flips the wrong Robinson-uphill sign to the correct +16.3°).",
+    "Capture GPS/flight-log with every dataset — without it, the sign can only be taken from the known flight label, which we can't independently verify (e.g. Robinson downhill).",
+    "Reliability tracks R²: trust the magnitude when R² is high; treat near-zero R² as 'no signal', not 'flat ground'.",
+    "Per-segment slopes are noisy and can spike — read them as a profile, not point values; use all images for the overall fit.",
+    "Prefer flights with vertical parallax (terrain-following / oblique) over level passes.",
+], size=16)
 
 # ── 14. Reproduce ─────────────────────────────────────────────────────────────
 s = title_only("Files & how to reproduce")
 tf = _txt(s, 0.7, 1.5, 11.9, 5.2)
 bullets(tf, [
-    "method1_slope.py — Method 1 implementation (all-frames, signed, image-order) + plot helpers",
-    "run_method1_existing.py — runs Method 1 on the existing GLBs, writes results/ plots + summary.json",
-    "run_robinson.py — A100: reconstruct Robinson images with VGGT, then Method 1",
+    "method1_slope.py — Method 1 (all-frames, signed, image-order, adaptive ground-search radius) + plot helpers",
+    "gps_anchor.py — reads EXIF GPS, computes the gravity-true track slope; the sign anchor",
+    "run_robinson.py — A100: reconstruct with VGGT (or --from-glb to skip GPU), then Method 1 + GPS anchor",
+    "run_method1_existing.py — Method 1 on the earlier GLBs → results/ plots + summary.json",
     "build_slides.py — regenerates this deck from results/",
-    "results/ — per-segment plots, profile plots, 3D scenes, method1_summary.json",
-    "Re-run order:  run_method1_existing.py  →  (A100) run_robinson.py  →  build_slides.py",
+    "Re-run order:  (A100) run_robinson.py [--from-glb]  →  build_slides.py",
 ], size=17)
 
 out = os.path.join(OUT_DIR, "method1_slope_report.pptx")
