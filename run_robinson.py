@@ -45,8 +45,25 @@ import gps_anchor
 
 IMG_EXTS = ("*.png", "*.jpg", "*.jpeg", "*.JPG", "*.PNG")
 
+# GPS altitude only reflects terrain on terrain-following / oblique flights; on a
+# fixed-altitude hold it is flat and its "slope" is meaningless. Trust the GPS
+# track for sign/magnitude only when its along-track fit clears this R².
+GPS_MIN_R2 = 0.3
 
-def gather_images(folder, markers=False):
+
+def _subsample(paths, max_frames):
+    """Evenly thin `paths` (already in order) down to at most max_frames, always
+    keeping the first and last. VGGT ingests every frame at once, so hundreds of
+    frames would OOM the GPU — 20-40 evenly-spaced views span the track just as
+    well for a global slope fit."""
+    if not max_frames or len(paths) <= max_frames:
+        return paths
+    idx = np.linspace(0, len(paths) - 1, max_frames).round().astype(int)
+    idx = sorted(set(idx.tolist()))
+    return [paths[i] for i in idx]
+
+
+def gather_images(folder, markers=False, max_frames=None):
     """Return image paths in capture order (1, 2, 3, …)."""
     if markers:
         import run_vggt_all as rv
@@ -60,7 +77,7 @@ def gather_images(folder, markers=False):
     imgs = []
     for ext in IMG_EXTS:
         imgs += glob.glob(os.path.join(folder, ext))
-    return sorted(set(imgs))
+    return _subsample(sorted(set(imgs)), max_frames)
 
 
 def _images_folder_for(name):
@@ -78,17 +95,25 @@ def _resolve_sign(r, gps, label):
                   else -1 if "down" in label.lower() else None)
     m1_mag = abs(r["overall_signed"])
 
-    if gps and gps.get("ok"):
+    # GPS is only a valid gravity reference when the flight actually gained/lost
+    # altitude with the terrain. Fixed-altitude holds (all sagamore flights) give
+    # a flat, meaningless GPS "slope" — gate it out via the along-track R².
+    gps_usable = bool(gps and gps.get("ok")
+                      and np.isfinite(gps.get("r2", np.nan))
+                      and gps["r2"] >= GPS_MIN_R2)
+
+    if gps_usable:
+        src = gps.get("source", "GPS")          # "sim ground-truth pose" or "EXIF GPS"
         sign = 1.0 if gps["signed_deg"] >= 0 else -1.0
         if r["r2"] < 0.5:
-            return gps["signed_deg"], "GPS track", "GPS"
-        return math.copysign(m1_mag, sign), "Method 1 magnitude, GPS sign", "GPS"
+            return gps["signed_deg"], f"{src} track", src
+        return math.copysign(m1_mag, sign), f"Method 1 magnitude, {src} sign", src
     if label_sign is not None:
         return label_sign * m1_mag, "Method 1 magnitude, folder-label sign", "folder label"
     return r["overall_signed"], "Method 1 (sign unverified)", "VGGT (unverified)"
 
 
-def analyze_glb(glb_path, name, n_images=None, images_folder=None):
+def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robinson"):
     """Method 1 + GPS sign-anchor + plots + JSON for one GLB (no GPU)."""
     res_dir = os.path.join(SLOPE_DIR, "results")
     os.makedirs(res_dir, exist_ok=True)
@@ -110,11 +135,22 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None):
     final_signed, basis, sign_source = _resolve_sign(r, gps, name)
     final_dir = "uphill" if final_signed >= 0 else "downhill"
 
-    out_png = os.path.join(res_dir, f"robinson_{name}_method1_segments.png")
-    m1.plot_segments(r, out_png)
-    m1.plot_profile(r, os.path.join(res_dir, f"robinson_{name}_method1_profile.png"))
+    # If the FINAL magnitude comes from Method 1, orient its plots to the FINAL
+    # (externally-anchored) sign so plots/titles/table agree. If the FINAL came
+    # from GPS instead (Method 1 was unreliable), leave Method 1 plots raw so they
+    # honestly show what Method 1 produced.
+    if "Method 1 magnitude" in basis:
+        plot_signed = final_signed
+        note = f"orientation anchored to {sign_source} (VGGT vertical axis is not gravity-locked)"
+    else:
+        plot_signed, note = None, ""
+
+    out_png = os.path.join(res_dir, f"{prefix}_{name}_method1_segments.png")
+    m1.plot_segments(r, out_png, final_signed=plot_signed, sign_note=note)
+    m1.plot_profile(r, os.path.join(res_dir, f"{prefix}_{name}_method1_profile.png"),
+                    final_signed=plot_signed, sign_note=note)
     if gps and gps.get("ok"):
-        gps_anchor.plot_track(gps, os.path.join(res_dir, f"robinson_{name}_gps_track.png"), name)
+        gps_anchor.plot_track(gps, os.path.join(res_dir, f"{prefix}_{name}_gps_track.png"), name)
 
     rec = {
         "dataset": name, "glb": os.path.basename(glb_path),
@@ -122,8 +158,9 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None):
         # raw Method 1 (VGGT frame) — kept for transparency
         "method1_signed_deg": round(r["overall_signed"], 2),
         "method1_r2": round(r["r2"], 4),
-        # GPS track (gravity-true), if available
+        # gravity-true anchor track, if available (EXIF GPS or sim ground-truth pose)
         "gps_available": bool(gps and gps.get("ok")),
+        "anchor_source": gps.get("source") if (gps and gps.get("ok")) else None,
         "gps_signed_deg": round(gps["signed_deg"], 2) if gps and gps.get("ok") else None,
         "gps_r2": round(gps["r2"], 4) if gps and gps.get("ok") else None,
         # final reported estimate
@@ -139,21 +176,22 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None):
             for s in r["segments"]
         ],
     }
-    with open(os.path.join(res_dir, f"robinson_{name}_method1.json"), "w") as f:
+    with open(os.path.join(res_dir, f"{prefix}_{name}_method1.json"), "w") as f:
         json.dump(rec, f, indent=2)
 
     print(f"  Method 1 (VGGT): {r['overall_signed']:+.2f}° (R²={r['r2']:.3f}, {r['n_ground_found']} ground pts)")
     if gps and gps.get("ok"):
-        print(f"  GPS track      : {gps['signed_deg']:+.2f}° {gps['direction']} (R²={gps['r2']:.3f}, {gps['n_with_gps']} frames)")
+        print(f"  {gps['source']:<15s}: {gps['signed_deg']:+.2f}° {gps['direction']} "
+              f"(R²={gps['r2']:.3f}, {gps['n_with_gps']} frames)")
     else:
-        print(f"  GPS track      : none")
+        print(f"  anchor track   : none")
     print(f"  → FINAL        : {final_signed:+.2f}° {final_dir}   [{basis}]")
     return rec
 
 
-def process_dataset(model, folder, markers=False):
+def process_dataset(model, folder, markers=False, prefix="robinson", max_frames=None):
     name = os.path.basename(os.path.normpath(folder))
-    images = gather_images(folder, markers=markers)
+    images = gather_images(folder, markers=markers, max_frames=max_frames)
     if len(images) < 2:
         print(f"  !! {name}: found {len(images)} images, need >=2. Skipping.")
         return None
@@ -161,11 +199,11 @@ def process_dataset(model, folder, markers=False):
     import run_vggt_all as rv
     glb_dir = os.path.join(SLOPE_DIR, "output_glbs", "vggt")
     os.makedirs(glb_dir, exist_ok=True)
-    glb_path = os.path.join(glb_dir, f"robinson_{name}.glb")
+    glb_path = os.path.join(glb_dir, f"{prefix}_{name}.glb")
     print(f"\n[{name}] reconstructing {len(images)} images with VGGT → {os.path.basename(glb_path)}")
-    rv.run_glb(model, images, glb_path)          # all images at once
+    rv.run_glb(model, images, glb_path)          # all selected images at once
 
-    return analyze_glb(glb_path, name, n_images=len(images), images_folder=folder)
+    return analyze_glb(glb_path, name, n_images=len(images), images_folder=folder, prefix=prefix)
 
 
 def main():
@@ -173,25 +211,30 @@ def main():
     ap.add_argument("path", nargs="?", help="dataset folder, or parent folder with --multi")
     ap.add_argument("--multi",    action="store_true", help="path holds several dataset subfolders")
     ap.add_argument("--markers",  action="store_true", help="datasets use marker1/.. subfolders")
+    ap.add_argument("--prefix",   default="robinson",
+                    help="output name prefix (e.g. sagamore, N75E). Default: robinson")
+    ap.add_argument("--max-frames", type=int, default=None,
+                    help="evenly subsample continuous flights to at most N frames before VGGT "
+                         "(avoids GPU OOM on hundreds of frames). Ignored with --markers.")
     ap.add_argument("--from-glb", action="store_true",
-                    help="skip VGGT; re-run Method 1 on existing output_glbs/vggt/robinson_*.glb (no GPU)")
+                    help="skip VGGT; re-run Method 1 on existing output_glbs/vggt/<prefix>_*.glb (no GPU)")
     args = ap.parse_args()
 
     # --from-glb: analysis only, no model — re-derive slopes/plots from existing GLBs
     if args.from_glb:
         glb_dir = os.path.join(SLOPE_DIR, "output_glbs", "vggt")
-        glbs = sorted(glob.glob(os.path.join(glb_dir, "robinson_*.glb")))
+        glbs = sorted(glob.glob(os.path.join(glb_dir, f"{args.prefix}_*.glb")))
         if not glbs:
-            print(f"No robinson_*.glb found in {glb_dir}")
+            print(f"No {args.prefix}_*.glb found in {glb_dir}")
             return
         summary = []
         for g in glbs:
-            name = os.path.splitext(os.path.basename(g))[0][len("robinson_"):]
+            name = os.path.splitext(os.path.basename(g))[0][len(args.prefix) + 1:]
             print(f"\n[{name}] re-analyzing {os.path.basename(g)} (no reconstruction)")
-            rec = analyze_glb(g, name)
+            rec = analyze_glb(g, name, prefix=args.prefix)
             if rec:
                 summary.append(rec)
-        out = os.path.join(SLOPE_DIR, "results", "robinson_summary.json")
+        out = os.path.join(SLOPE_DIR, "results", f"{args.prefix}_summary.json")
         with open(out, "w") as f:
             json.dump(summary, f, indent=2)
         print(f"\nDone. Summary → {out}")
@@ -217,11 +260,12 @@ def main():
 
     summary = []
     for folder in folders:
-        rec = process_dataset(model, folder, markers=args.markers)
+        rec = process_dataset(model, folder, markers=args.markers,
+                              prefix=args.prefix, max_frames=args.max_frames)
         if rec:
             summary.append(rec)
 
-    out = os.path.join(SLOPE_DIR, "results", "robinson_summary.json")
+    out = os.path.join(SLOPE_DIR, "results", f"{args.prefix}_summary.json")
     with open(out, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\nAll done. Summary → {out}")

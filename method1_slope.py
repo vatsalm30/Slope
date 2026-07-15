@@ -156,17 +156,24 @@ def analyse_method2(glb_path):
 
 # ── per-segment plot ──────────────────────────────────────────────────────────
 
-def plot_segments(result, out_png, title_extra=""):
+def plot_segments(result, out_png, title_extra="", final_signed=None, sign_note=""):
     """x-axis: image-index segment; y-axis: signed slope angle (+up / -down).
 
     The y-axis is capped to the bulk of the segments so a single near-vertical
     artifact (two closely-spaced cameras) doesn't flatten everything else;
     off-scale bars are drawn to the cap and labelled with their true value.
+
+    `final_signed` overrides the displayed orientation (see plot_profile): when
+    the up/down sign was anchored externally and opposes VGGT's, all values flip.
     """
     segs   = result["segments"]
     labels = [s["label"] for s in segs]
     vals   = [s["signed_slope"] for s in segs]
     ov     = result["overall_signed"]
+    if final_signed is not None:
+        if (final_signed < 0) != (ov < 0):
+            vals = [-v for v in vals]
+        ov = final_signed
     colors = ["#2a9d8f" if v >= 0 else "#e76f51" for v in vals]   # green up / red down
 
     finite = np.array([v for v in vals if np.isfinite(v)])
@@ -198,6 +205,9 @@ def plot_segments(result, out_png, title_extra=""):
     ax.set_ylabel("Slope angle (°)   + uphill / − downhill")
     ax.set_title(f"{result['name']}   |   per-segment slope (Method 1){title_extra}",
                  fontsize=11, fontweight="bold")
+    if sign_note:
+        ax.text(0.02, 0.02, sign_note, transform=ax.transAxes, fontsize=8,
+                style="italic", color="#555", va="bottom")
     pad = cap * 0.18
     ax.set_ylim(min(-cap, ov) - pad, max(cap, ov) + pad)
     ax.legend(loc="best", fontsize=9)
@@ -208,28 +218,43 @@ def plot_segments(result, out_png, title_extra=""):
     return out_png
 
 
-def plot_profile(result, out_png, title_extra=""):
+def plot_profile(result, out_png, title_extra="", final_signed=None, sign_note=""):
     """The fit Method 1 actually performs: ground elevation vs along-track distance.
 
     x = along-track distance (m, in flight direction); y = elevation (= −Y, up).
     The fitted line's tilt IS the estimated slope; R² shows how cleanly the
     reconstruction encodes the terrain profile along the path.
+
+    `final_signed` overrides the displayed orientation: VGGT's vertical axis is
+    not gravity-locked, so when the up/down sign has been anchored externally
+    (GPS or flight label) we flip the elevation axis to match, and annotate why.
     """
     s   = result["s"][result["found"]]
     elev = -result["ground_pts"][result["found"], 1]      # −Y so 'up' is up
     order = np.argsort(s); s = s[order]; elev = elev[order]
 
-    a, b = np.polyfit(s, elev, 1)                          # elevation slope = +a per metre
+    raw_signed = result["overall_signed"]
+    disp_signed = raw_signed
+    if final_signed is not None:
+        if (final_signed < 0) != (raw_signed < 0):        # external sign opposes VGGT's
+            elev = -elev
+        disp_signed = final_signed
+
+    a, b = np.polyfit(s, elev, 1)                          # elevation slope per metre
     xs = np.linspace(s.min(), s.max(), 50)
 
     fig, ax = plt.subplots(figsize=(7.6, 5.0))
     ax.scatter(s, elev, c="dodgerblue", s=55, zorder=5, label="ground points")
     ax.plot(xs, a * xs + b, color="#264653", lw=2.2, linestyle="--",
-            label=f"fit: {result['overall_signed']:+.2f}°  (R²={result['r2']:.3f})")
+            label=f"fit: {disp_signed:+.2f}°  (R²={result['r2']:.3f})")
     ax.set_xlabel("Along-track distance (m)  — flight direction →")
-    ax.set_ylabel("Ground elevation (m)  (= −Y, up)")
+    ax.set_ylabel("Ground elevation (gravity-anchored, m)"
+                  if final_signed is not None else "Ground elevation (m)  (= −Y, up)")
     ax.set_title(f"{result['name']}   |   Method 1 fit{title_extra}",
                  fontsize=11, fontweight="bold")
+    if sign_note:
+        ax.text(0.02, 0.02, sign_note, transform=ax.transAxes, fontsize=8,
+                style="italic", color="#555", va="bottom")
     ax.legend(loc="best", fontsize=9)
     ax.grid(alpha=0.25)
     plt.tight_layout()

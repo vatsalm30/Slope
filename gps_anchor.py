@@ -1,24 +1,38 @@
 """
-GPS sign-anchor for Method 1.
+Gravity-true vertical anchor for Method 1 (historically "GPS anchor").
 
 Method 1 reads slope from the VGGT point cloud, but its up/down SIGN depends on
 VGGT's vertical axis matching true gravity — which VGGT does not guarantee (it has
 no gravity sensor, and reconstructions carry an orientation/handedness ambiguity).
 
-When the source photos carry GPS (lat, lon, altitude), the drone's own track gives
-a gravity-true reference: altitude vs. horizontal distance along the flight. That
-fixes the uphill/downhill sign unambiguously and gives a metric sanity-check slope.
+A per-frame (height, position) track gives a gravity-true reference: height vs.
+horizontal distance along the flight fixes the uphill/downhill sign unambiguously
+and gives a metric sanity-check slope. That track comes from one of two sources,
+tried in order (see read_gps):
 
-This reads EXIF with Pillow only (cross-platform: works on the Mac and the A100),
-no GPU, no extra dependencies.
+  * "sim ground-truth pose (filename)" — rendered/sim frames encode exact pose in
+    the filename: null_<ts>_<idx>_<height>_<X/lon>_<Y/lat>_..._DONE0 …  (no sensor
+    noise; this is ground truth, not GPS). Used by sagamore_0708 / N75E_0712.
+  * "EXIF GPS" — real camera photos (e.g. Robinson: iPhone/DJI) carry lat/lon/alt
+    in EXIF.
+
+Pure-Python for the filename path; Pillow is imported lazily only for EXIF. No GPU.
 """
 import os
+import re
 import glob
 import numpy as np
-from PIL import Image
-from PIL.ExifTags import TAGS, GPSTAGS
 
 IMG_EXTS = ("*.jpg", "*.jpeg", "*.JPG", "*.JPEG", "*.png", "*.PNG")
+
+# Filename-encoded GPS (drone-render exports):
+#   null_<ts_ms>_<idx>_<alt_m>_<lon>_<lat>_..._DONE0 <date> <time>.png
+# Field order after the leading token is: timestamp, index, altitude, lon, lat.
+# This carries GPS with no EXIF and no image decode — parse it first (cheap, no
+# Pillow needed), and only fall back to EXIF for real camera JPGs (Robinson).
+_NAME_GPS = re.compile(
+    r"^null_(\d+)_(\d+)_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)_"
+)
 
 
 def _ratio(x):
@@ -29,9 +43,29 @@ def _ratio(x):
         return float(x[0]) / float(x[1])
 
 
+def read_gps_from_name(image_path):
+    """Return (lat_deg, lon_deg, alt_m) parsed from the filename, or None.
+
+    Sanity-checks the values look like real WGS84 coordinates so we don't
+    mis-parse an unrelated filename that happens to have underscores."""
+    m = _NAME_GPS.match(os.path.basename(image_path))
+    if not m:
+        return None
+    _, _, alt, lon, lat = (float(g) for g in m.groups())
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return lat, lon, alt
+
+
 def read_gps(image_path):
-    """Return (lat_deg, lon_deg, alt_m) or None if the image has no GPS EXIF."""
+    """Return (lat_deg, lon_deg, alt_m) or None. Tries the filename encoding
+    first (no image decode, no Pillow), then EXIF for real camera photos."""
+    named = read_gps_from_name(image_path)
+    if named is not None:
+        return named
     try:
+        from PIL import Image
+        from PIL.ExifTags import GPSTAGS
         exif = Image.open(image_path).getexif()
     except Exception:
         return None
@@ -78,10 +112,20 @@ def gps_track_slope(image_paths):
         -  = falls (downhill)
     Returns a dict, or {'ok': False} if fewer than 2 frames carry GPS+altitude.
     """
-    fixes = [(p, read_gps(p)) for p in image_paths]
-    fixes = [(p, g) for p, g in fixes if g is not None and np.isfinite(g[2])]
-    if len(fixes) < 2:
-        return {"ok": False, "n_with_gps": len(fixes)}
+    # track how each fix was obtained so the anchor self-labels (sim pose vs GPS)
+    raw = []
+    for p in image_paths:
+        named = read_gps_from_name(p)
+        if named is not None and np.isfinite(named[2]):
+            raw.append((p, named, "name"))
+            continue
+        g = read_gps(p)
+        if g is not None and np.isfinite(g[2]):
+            raw.append((p, g, "exif"))
+    if len(raw) < 2:
+        return {"ok": False, "n_with_gps": len(raw)}
+    fixes = [(p, g) for p, g, _ in raw]
+    src = "sim ground-truth pose" if sum(s == "name" for *_, s in raw) >= len(raw) / 2 else "EXIF GPS"
 
     lats = np.array([g[0] for _, g in fixes])
     lons = np.array([g[1] for _, g in fixes])
@@ -105,6 +149,7 @@ def gps_track_slope(image_paths):
     signed = np.degrees(np.arctan(grad))        # alt is true 'up' -> +grad = uphill
     return {
         "ok": True,
+        "source": src,
         "n_with_gps": len(fixes),
         "signed_deg": float(signed),
         "direction": "uphill" if signed >= 0 else "downhill",
@@ -146,9 +191,12 @@ def plot_track(gps, out_png, name=""):
 
 
 def gather_images(folder):
+    """All images under `folder`, recursing into subfolders (marker1/, uphill/,
+    …) so the GPS track is built from every frame, not just top-level ones."""
     imgs = []
     for ext in IMG_EXTS:
         imgs += glob.glob(os.path.join(folder, ext))
+        imgs += glob.glob(os.path.join(folder, "**", ext), recursive=True)
     return sorted(set(imgs))
 
 
