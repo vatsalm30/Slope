@@ -164,6 +164,111 @@ def gps_track_slope(image_paths):
     }
 
 
+def frame_positions(image_paths):
+    """World positions for an ORDERED list of frames (same order as the GLB
+    cameras). Returns (idx, P, source) where:
+
+      * idx    — indices into image_paths of frames that carried a usable fix
+      * P      — len(idx) x 3 array of METHOD-1-frame positions for those frames:
+                 columns are [east, -up, north] metres (so +Y = down, matching
+                 method1_slope's convention), mean-centred is not required.
+      * source — "sim ground-truth pose" or "EXIF GPS"
+
+    Returns (None, None, None) if fewer than 3 frames carry a fix (Kabsch needs
+    at least 3 to fix a rotation)."""
+    fixes, srcs = [], []
+    for p in image_paths:
+        named = read_gps_from_name(p)
+        if named is not None and np.isfinite(named[2]):
+            fixes.append(named); srcs.append("name"); continue
+        g = read_gps(p)
+        if g is not None and np.isfinite(g[2]):
+            fixes.append(g); srcs.append("exif")
+        else:
+            fixes.append(None); srcs.append(None)
+
+    idx = [i for i, f in enumerate(fixes) if f is not None]
+    if len(idx) < 3:
+        return None, None, None
+
+    lats = np.array([fixes[i][0] for i in idx])
+    lons = np.array([fixes[i][1] for i in idx])
+    alts = np.array([fixes[i][2] for i in idx])
+    east, north = _enu(lats, lons, float(lats.mean()))
+    P = np.column_stack([east, -alts, north])      # +Y = down -> up is -alt
+    src = ("sim ground-truth pose"
+           if sum(srcs[i] == "name" for i in idx) >= len(idx) / 2 else "EXIF GPS")
+    return np.array(idx), P, src
+
+
+def _umeyama(A, B):
+    """Least-squares similarity (s, R, t) mapping A -> B for matched Nx3 sets:
+    minimises || s*R @ A_i + t - B_i ||.  Returns (R, s, t, sing) where `sing`
+    are the singular values used (for a degeneracy check)."""
+    muA, muB = A.mean(0), B.mean(0)
+    A0, B0 = A - muA, B - muB
+    H = (A0.T @ B0) / len(A)
+    U, S, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))          # reflection guard
+    D = np.diag([1.0, 1.0, d])
+    R = Vt.T @ D @ U.T
+    varA = (A0 ** 2).sum() / len(A)
+    s = float((S * np.array([1.0, 1.0, d])).sum() / varA) if varA > 1e-12 else 1.0
+    t = muB - s * R @ muA
+    return R, s, t
+
+
+def gravity_align(cameras_glb, image_paths, min_axis_ratio=0.05, max_resid_rel=0.5):
+    """Recover the rotation that carries the VGGT/GLB frame into a gravity-true
+    frame, using the known ground-truth camera world positions.
+
+    VGGT reconstructs only up to a similarity transform, and the exported scene
+    sits in camera-0's frame — its +Y is NOT gravity. But every sim frame's
+    filename encodes the true camera world position, so aligning the GLB camera
+    centres to those true positions recovers the missing rotation. Rotating the
+    terrain by it puts slope back on a true-vertical footing.
+
+    Args
+      cameras_glb  Mx3 GLB camera centres, in GLB-camera order.
+      image_paths  the ORDERED image list fed to VGGT (image_paths[i] <-> camera i).
+
+    Returns a dict:
+      {ok, R (3x3), source, n_frames, resid_m, resid_rel, note}
+    `ok` is False (with a `note`) when there is no pose track, too few frames,
+    a collinear/degenerate camera constellation, or a large alignment residual —
+    in those cases the caller should fall back to the un-aligned estimate."""
+    idx, P_world, src = frame_positions(image_paths)
+    if idx is None:
+        return {"ok": False, "note": "no pose track (need >=3 frames with a fix)"}
+    if len(idx) > len(cameras_glb):
+        return {"ok": False, "note": "more pose fixes than GLB cameras (order mismatch)"}
+
+    A = np.asarray(cameras_glb, dtype=np.float64)[idx]      # GLB centres, matched
+    B = P_world                                             # true world centres
+
+    # collinearity guard: the GLB camera constellation must span >=2 dimensions
+    # for a rotation to be determined (coplanar is fine; a single line is not).
+    sv = np.linalg.svd(A - A.mean(0), compute_uv=False)
+    if sv[0] < 1e-9 or sv[1] / sv[0] < min_axis_ratio:
+        return {"ok": False, "source": src, "n_frames": int(len(idx)),
+                "note": f"degenerate camera geometry (collinear, axis ratio "
+                        f"{sv[1] / max(sv[0], 1e-12):.3f})"}
+
+    R, s, t = _umeyama(A, B)
+    resid = A @ (s * R).T + t - B
+    resid_m = float(np.sqrt((resid ** 2).sum(axis=1).mean()))
+    span = float(np.ptp(B[:, [0, 2]]))                      # horizontal baseline
+    resid_rel = resid_m / span if span > 1e-9 else float("inf")
+    if resid_rel > max_resid_rel:
+        return {"ok": False, "source": src, "n_frames": int(len(idx)),
+                "resid_m": round(resid_m, 3), "resid_rel": round(resid_rel, 3),
+                "note": f"poor pose alignment (residual {resid_rel:.2f} of baseline)"}
+
+    return {"ok": True, "R": R, "source": src, "n_frames": int(len(idx)),
+            "resid_m": round(resid_m, 3), "resid_rel": round(resid_rel, 3),
+            "note": "gravity-aligned via known camera poses"}
+
+
 def plot_track(gps, out_png, name=""):
     """GPS altitude vs along-track distance — the gravity-true profile + fit."""
     import matplotlib

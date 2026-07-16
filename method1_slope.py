@@ -89,7 +89,14 @@ def analyse(glb_path):
     """Run Method 1 on one GLB. Returns a result dict (all frames, signed)."""
     terrain, cameras = load_glb(glb_path)
     name = os.path.splitext(os.path.basename(glb_path))[0]
+    return analyse_arrays(terrain, cameras, name)
 
+
+def analyse_arrays(terrain, cameras, name="glb"):
+    """Method 1 on pre-loaded arrays (terrain Nx3, cameras Mx3), so a caller can
+    gravity-align the frame first (rotate terrain+cameras into a true-vertical
+    frame) before measuring slope. Both arrays must share the same frame with
+    +Y = down. Returns the same result dict as analyse()."""
     radius = np.ptp(terrain[:, [0, 2]]) * SEARCH_RADIUS_FRAC
 
     ground_pts, found = [], []

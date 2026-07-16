@@ -8,6 +8,18 @@ Note on the anchor: these are rendered/sim frames — there is **no GPS**. Each 
 filename carries exact **ground-truth pose** (`null_<ts>_<idx>_<height>_<X>_<Y>_…`),
 which is a better gravity reference than GPS. The code reads it directly.
 
+**Gravity alignment (new).** VGGT reconstructs only up to a similarity transform and
+exports the scene in camera-0's frame, so its `+Y` is *not* gravity — the raw Method 1
+slope is measured in a tilted frame and its **magnitude is wrong** (e.g. a true 25°
+slope read as ~65°). The pipeline now Umeyama-aligns the GLB camera centres to the
+ground-truth poses, recovers the VGGT→gravity rotation, rotates the terrain into a
+true-vertical frame, and only then measures slope. This corrects **both magnitude and
+sign** from the poses. Each result reports `method1_signed_deg` (gravity-aligned),
+`method1_raw_vggt_deg` (the old tilted value, for transparency), and `gravity_aligned`
+/ `align_resid_m` (a small residual, ~<0.1 m, means a trustworthy alignment). If the
+camera constellation is collinear/degenerate, alignment is skipped and the run falls
+back to the old folder-label-sign behaviour (see `align_note`).
+
 VGGT-1B weights auto-download from HuggingFace on first run.
 
 ## 1. Sagamore — 6 marker flights (1 sharp frame per marker)
@@ -18,13 +30,16 @@ python run_robinson.py sagamore_0708 --multi --markers --prefix sagamore
 
 Processes all 6 flights. Each reconstructs from 5–12 images (one per marker).
 
-- Pose **height is flat** on every sagamore flight (fixed-altitude & terrain-
-  following both hold height), so the sign comes from the folder label
-  (`_uphill`/`_downhill`) and the **magnitude comes from VGGT Method 1**.
+- Pose **height is flat** on every sagamore flight, but the full 2-D camera
+  positions (east/north) are enough to gravity-align, so magnitude **and** sign
+  now come from the pose-aligned Method 1 — not the folder label. The label is
+  only a fallback if the markers are collinear (alignment then skips).
 - Ground truth is in the folder name: `slope_4…` ≈ 4°, `slope_25…` ≈ 25°.
-  Compare `final_signed_deg` against that.
-- Watch `method1_r2` in each JSON — fixed-altitude flights can rebuild nearly flat
-  (low R²). If so, that flight's geometry didn't give VGGT enough parallax.
+  Compare `final_signed_deg` (should now be close) against that; `method1_raw_vggt_deg`
+  is the old tilted value and will still look inflated.
+- Watch `method1_r2` and `align_resid_m` in each JSON. Fixed-altitude flights can
+  rebuild nearly flat (low R²) — if so, that flight's geometry didn't give VGGT
+  enough parallax. A large `align_resid_m` means the pose alignment itself is weak.
 
 ## 2. N75E — 5 continuous flights (32 evenly-spaced frames each)
 
@@ -52,13 +67,18 @@ folder label, magnitude from VGGT.
 
 ## Re-run analysis only (no GPU, after reconstructions exist)
 
-Tweak Method 1 / plots without re-reconstructing:
+Tweak Method 1 / plots without re-reconstructing. **Pass the dataset root + the same
+`--multi`/`--markers`/`--max-frames` flags** so the analysis can find the source
+images and gravity-align (the poses live in the filenames):
 
 ```bash
-python run_robinson.py --from-glb --prefix sagamore
-python run_robinson.py --from-glb --prefix N75E
-python run_robinson.py --from-glb --prefix N75E_type3
+python run_robinson.py sagamore_0708 --from-glb --multi --markers --prefix sagamore
+python run_robinson.py N75E_0712 --from-glb --multi --max-frames 32 --prefix N75E
+python run_robinson.py N75E_0712/type3_front_N75E --from-glb --multi --markers --prefix N75E_type3
 ```
+
+(Omitting the path still works but skips gravity alignment — you'd get the old
+raw-VGGT-frame magnitudes.)
 
 ## Outputs (per flight, in `results/`)
 

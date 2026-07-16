@@ -113,37 +113,61 @@ def _resolve_sign(r, gps, label):
     return r["overall_signed"], "Method 1 (sign unverified)", "VGGT (unverified)"
 
 
-def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robinson"):
-    """Method 1 + GPS sign-anchor + plots + JSON for one GLB (no GPU)."""
+def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robinson",
+                ordered_images=None):
+    """Method 1 + pose gravity-anchor + plots + JSON for one GLB (no GPU).
+
+    When `ordered_images` (the ORDERED image list fed to VGGT, one per GLB camera)
+    is given and carries ground-truth poses, the GLB frame is gravity-aligned to
+    those poses before Method 1 runs — this corrects BOTH the slope magnitude and
+    sign, because VGGT's raw vertical axis is not gravity-locked. Otherwise it
+    falls back to the raw VGGT-frame estimate with the sign anchored externally
+    (GPS track / folder label), as before."""
     res_dir = os.path.join(SLOPE_DIR, "results")
     os.makedirs(res_dir, exist_ok=True)
 
-    r = m1.analyse(glb_path)
-    if not r["ok"]:
+    terrain, cameras = m1.load_glb(glb_path)
+    raw = m1.analyse_arrays(terrain, cameras, name)      # VGGT-frame (un-aligned)
+    if not raw["ok"]:
         print(f"  !! {name}: not enough ground points beneath cameras.")
         return None
     if n_images is None:
-        n_images = r["n_cams"]
+        n_images = raw["n_cams"]
 
-    # GPS sign-anchor from the source photos, if we can find them
+    # Gravity-align the GLB frame to the known camera poses, if we can.
+    align = {"ok": False, "note": "no ordered image list supplied"}
+    if ordered_images:
+        align = gps_anchor.gravity_align(cameras, ordered_images)
+    aligned = bool(align.get("ok"))
+    if aligned:
+        R = align["R"]
+        r = m1.analyse_arrays(terrain @ R.T, cameras @ R.T, name)
+    else:
+        r = raw
+
+    # GPS/pose track (altitude-vs-distance) — still computed for its plot and as a
+    # secondary sanity reference. Sign anchoring below only uses it when NOT aligned.
     if images_folder is None:
         images_folder = _images_folder_for(name)
     gps = None
     if images_folder:
         gps = gps_anchor.gps_track_slope(gps_anchor.gather_images(images_folder))
 
-    final_signed, basis, sign_source = _resolve_sign(r, gps, name)
-    final_dir = "uphill" if final_signed >= 0 else "downhill"
-
-    # If the FINAL magnitude comes from Method 1, orient its plots to the FINAL
-    # (externally-anchored) sign so plots/titles/table agree. If the FINAL came
-    # from GPS instead (Method 1 was unreliable), leave Method 1 plots raw so they
-    # honestly show what Method 1 produced.
-    if "Method 1 magnitude" in basis:
-        plot_signed = final_signed
-        note = f"orientation anchored to {sign_source} (VGGT vertical axis is not gravity-locked)"
+    if aligned:
+        # gravity-aligned Method 1 gives a trustworthy signed slope on its own.
+        final_signed = r["overall_signed"]
+        sign_source = align["source"]
+        basis = f"Method 1, gravity-aligned via {sign_source}"
+        plot_signed = None          # arrays already in a true-vertical frame
+        note = f"gravity-aligned to {sign_source} poses (resid {align['resid_m']} m, {align['n_frames']} frames)"
     else:
-        plot_signed, note = None, ""
+        final_signed, basis, sign_source = _resolve_sign(r, gps, name)
+        if "Method 1 magnitude" in basis:
+            plot_signed = final_signed
+            note = f"orientation anchored to {sign_source} (VGGT vertical axis is not gravity-locked)"
+        else:
+            plot_signed, note = None, ""
+    final_dir = "uphill" if final_signed >= 0 else "downhill"
 
     out_png = os.path.join(res_dir, f"{prefix}_{name}_method1_segments.png")
     m1.plot_segments(r, out_png, final_signed=plot_signed, sign_note=note)
@@ -155,9 +179,17 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robin
     rec = {
         "dataset": name, "glb": os.path.basename(glb_path),
         "n_images": n_images, "n_ground_found": r["n_ground_found"],
-        # raw Method 1 (VGGT frame) — kept for transparency
+        # Method 1 result used for the final estimate (gravity-aligned when possible)
         "method1_signed_deg": round(r["overall_signed"], 2),
         "method1_r2": round(r["r2"], 4),
+        # raw VGGT-frame Method 1 (before gravity alignment) — kept for transparency
+        "method1_raw_vggt_deg": round(raw["overall_signed"], 2),
+        # gravity alignment from known camera poses
+        "gravity_aligned": aligned,
+        "align_source": align.get("source"),
+        "align_resid_m": align.get("resid_m"),
+        "align_frames": align.get("n_frames"),
+        "align_note": align.get("note"),
         # gravity-true anchor track, if available (EXIF GPS or sim ground-truth pose)
         "gps_available": bool(gps and gps.get("ok")),
         "anchor_source": gps.get("source") if (gps and gps.get("ok")) else None,
@@ -179,12 +211,15 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robin
     with open(os.path.join(res_dir, f"{prefix}_{name}_method1.json"), "w") as f:
         json.dump(rec, f, indent=2)
 
-    print(f"  Method 1 (VGGT): {r['overall_signed']:+.2f}° (R²={r['r2']:.3f}, {r['n_ground_found']} ground pts)")
+    print(f"  Method 1 (raw VGGT frame): {raw['overall_signed']:+.2f}° (R²={raw['r2']:.3f}, {raw['n_ground_found']} ground pts)")
+    if aligned:
+        print(f"  Method 1 (gravity-aligned): {r['overall_signed']:+.2f}° (R²={r['r2']:.3f})  "
+              f"[{align['source']}, resid {align['resid_m']} m over {align['n_frames']} frames]")
+    else:
+        print(f"  gravity align  : skipped — {align.get('note')}")
     if gps and gps.get("ok"):
         print(f"  {gps['source']:<15s}: {gps['signed_deg']:+.2f}° {gps['direction']} "
               f"(R²={gps['r2']:.3f}, {gps['n_with_gps']} frames)")
-    else:
-        print(f"  anchor track   : none")
     print(f"  → FINAL        : {final_signed:+.2f}° {final_dir}   [{basis}]")
     return rec
 
@@ -203,7 +238,8 @@ def process_dataset(model, folder, markers=False, prefix="robinson", max_frames=
     print(f"\n[{name}] reconstructing {len(images)} images with VGGT → {os.path.basename(glb_path)}")
     rv.run_glb(model, images, glb_path)          # all selected images at once
 
-    return analyze_glb(glb_path, name, n_images=len(images), images_folder=folder, prefix=prefix)
+    return analyze_glb(glb_path, name, n_images=len(images), images_folder=folder,
+                       prefix=prefix, ordered_images=images)
 
 
 def main():
@@ -230,8 +266,21 @@ def main():
         summary = []
         for g in glbs:
             name = os.path.splitext(os.path.basename(g))[0][len(args.prefix) + 1:]
-            print(f"\n[{name}] re-analyzing {os.path.basename(g)} (no reconstruction)")
-            rec = analyze_glb(g, name, prefix=args.prefix)
+            # Locate the source images so we can gravity-align without the GPU.
+            # Pass the dataset root as the positional path (same --multi/--markers/
+            # --max-frames flags used for the reconstruction run).
+            flight_folder = None
+            if args.path:
+                cand = os.path.join(args.path, name) if args.multi else args.path
+                if os.path.isdir(cand):
+                    flight_folder = cand
+            ordered = (gather_images(flight_folder, markers=args.markers,
+                                     max_frames=args.max_frames)
+                       if flight_folder else None)
+            print(f"\n[{name}] re-analyzing {os.path.basename(g)} (no reconstruction)"
+                  + ("" if flight_folder else "  [no source images → gravity align skipped]"))
+            rec = analyze_glb(g, name, images_folder=flight_folder, prefix=args.prefix,
+                              ordered_images=ordered)
             if rec:
                 summary.append(rec)
         out = os.path.join(SLOPE_DIR, "results", f"{args.prefix}_summary.json")
