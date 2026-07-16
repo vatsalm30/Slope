@@ -1,0 +1,42 @@
+{
+  "dataset": "uphill",
+  "glb": "N75E_type3_uphill.glb",
+  "n_images": 5,
+  "n_ground_found": 5,
+  "method1_signed_deg": -4.08,
+  "method1_r2": 0.9938,
+  "gps_available": true,
+  "anchor_source": "sim ground-truth pose",
+  "gps_signed_deg": 0.0,
+  "gps_r2": NaN,
+  "final_signed_deg": 4.08,
+  "direction": "uphill",
+  "sign_source": "folder label",
+  "estimate_basis": "Method 1 magnitude, folder-label sign",
+  "segments": [
+    {
+      "label": "1\u21922",
+      "signed_slope": -3.67,
+      "horiz_m": 0.397,
+      "dY_m": 0.026
+    },
+    {
+      "label": "2\u21923",
+      "signed_slope": -4.07,
+      "horiz_m": 0.291,
+      "dY_m": 0.021
+    },
+    {
+      "label": "3\u21924",
+      "signed_slope": -5.31,
+      "horiz_m": 0.148,
+      "dY_m": 0.014
+    },
+    {
+      "label": "4\u21925",
+      "signed_slope": 1.33,
+      "horiz_m": 0.094,
+      "dY_m": -0.002
+    }
+  ]
+}
