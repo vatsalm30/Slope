@@ -125,6 +125,12 @@ def analyse_arrays(terrain, cameras, name="glb"):
     overall_signed = -np.degrees(np.arctan(grad))
     direction      = "uphill" if overall_signed >= 0 else "downhill"
 
+    # full 2-D terrain grade from a plane fit to the ground points — a cross-check
+    # on the along-track line fit (which only sees the component along the flight
+    # path). Only meaningful once the frame is gravity-aligned. `plane_slope_deg`
+    # is the steepest grade of the surface; `aspect_deg` its downhill direction.
+    plane_slope_deg, aspect_deg = plane_slope(ground_pts, found)
+
     # per-segment slopes between consecutive images (image order on x-axis)
     segments = []
     for i in range(len(cameras) - 1):
@@ -142,10 +148,34 @@ def analyse_arrays(terrain, cameras, name="glb"):
         "name": name, "ok": True, "n_cams": len(cameras),
         "n_ground_found": int(found.sum()),
         "overall_signed": overall_signed, "direction": direction, "r2": r2,
+        "plane_slope_deg": plane_slope_deg, "aspect_deg": aspect_deg,
         "segments": segments,
         "terrain": terrain, "cameras": cameras,
         "ground_pts": ground_pts, "found": found, "fd": fd, "s": s,
     }
+
+
+def plane_slope(ground_pts, found):
+    """Terrain grade from a least-squares plane fit to the ground points, in the
+    (gravity-aligned) +Y=down frame. Returns (max_slope_deg, aspect_deg):
+
+      * max_slope_deg — steepest grade of the surface = angle of the plane normal
+        from vertical. This is the full 2-D grade; the along-track `overall_signed`
+        is its component along the flight path, so |overall_signed| <= max_slope_deg.
+      * aspect_deg    — downhill direction in the horizontal (XZ) plane.
+
+    A large gap between the two means the flight ran across the slope rather than
+    up/down the fall line; NaN if fewer than 3 ground points."""
+    g = ground_pts[found]
+    if len(g) < 3:
+        return float("nan"), float("nan")
+    _, _, Vt = np.linalg.svd(g - g.mean(0), full_matrices=False)
+    n = Vt[-1]                                          # unit plane normal
+    n = n / (np.linalg.norm(n) + 1e-12)
+    max_slope = float(np.degrees(np.arccos(min(1.0, abs(n[1])))))   # tilt from vertical
+    aspect = (float(np.degrees(np.arctan2(n[2], n[0])))
+              if abs(n[1]) < 0.9999 else float("nan"))
+    return max_slope, aspect
 
 
 # ── Method 2 (camera-altitude) — for side-by-side comparison only ─────────────

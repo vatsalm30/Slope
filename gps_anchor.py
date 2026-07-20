@@ -218,55 +218,115 @@ def _umeyama(A, B):
     return R, s, t
 
 
-def gravity_align(cameras_glb, image_paths, min_axis_ratio=0.05, max_resid_rel=0.5):
-    """Recover the rotation that carries the VGGT/GLB frame into a gravity-true
-    frame, using the known ground-truth camera world positions.
+def _rotation_from_up(up_vec):
+    """Shortest-arc rotation mapping a GLB-frame up-vector onto method-1-frame
+    world up = (0, -1, 0)  (+Y = down).
 
-    VGGT reconstructs only up to a similarity transform, and the exported scene
-    sits in camera-0's frame — its +Y is NOT gravity. But every sim frame's
-    filename encodes the true camera world position, so aligning the GLB camera
-    centres to those true positions recovers the missing rotation. Rotating the
-    terrain by it puts slope back on a true-vertical footing.
+    Azimuth about the vertical is left arbitrary — it does NOT affect slope
+    magnitude or the along-track sign, because the flight direction is re-derived
+    from the (rotated) cameras. A single correct up-vector is therefore enough to
+    put slope on a true-vertical footing, which is why a per-image gravity estimate
+    (GeoCalib) or the drone IMU can rescue flights whose camera geometry is too
+    degenerate for pose-based alignment (e.g. a straight-line / nadir pass)."""
+    u = np.asarray(up_vec, dtype=np.float64)
+    n = np.linalg.norm(u)
+    if n < 1e-9:
+        return np.eye(3)
+    u = u / n
+    t = np.array([0.0, -1.0, 0.0])
+    v = np.cross(u, t)
+    s = np.linalg.norm(v)
+    c = float(np.dot(u, t))
+    if s < 1e-9:                                    # already up, or exactly flipped
+        return np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
+    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s * s))
+
+
+def gravity_align(cameras_glb, image_paths, min_axis_ratio=0.05, max_resid_rel=0.5,
+                  up_hint=None):
+    """Recover the rotation that carries the VGGT/GLB frame into a gravity-true
+    frame — the pipeline's central problem (VGGT returns geometry in camera-0's
+    tilted frame up to a similarity, so slope read off it carries the camera tilt).
+
+    Two gravity sources, tried in order:
+
+      1. **Pose-based Umeyama** (primary) — align the GLB camera centres to the
+         known ground-truth camera world positions (from the filenames). Needs a
+         non-degenerate (non-collinear) camera constellation.
+      2. **External up-vector** (`up_hint`, fallback) — a per-image up-vector (from
+         GeoCalib) or the drone IMU/attitude, in the GLB frame. Used when the pose
+         geometry is degenerate. One up-vector is enough to fix slope. Pass a single
+         (3,) vector or an (N,3) array (averaged). This is the research-recommended
+         rescue for straight-line / nadir flights.
 
     Args
       cameras_glb  Mx3 GLB camera centres, in GLB-camera order.
       image_paths  the ORDERED image list fed to VGGT (image_paths[i] <-> camera i).
+      up_hint      optional GLB-frame up-vector(s) from GeoCalib/IMU (see above).
 
-    Returns a dict:
-      {ok, R (3x3), source, n_frames, resid_m, resid_rel, note}
-    `ok` is False (with a `note`) when there is no pose track, too few frames,
-    a collinear/degenerate camera constellation, or a large alignment residual —
-    in those cases the caller should fall back to the un-aligned estimate."""
+    Returns a dict always carrying the flight's degeneracy metrics
+    (`collinearity` = 2nd/1st singular value of the camera spread, `planarity` =
+    3rd/1st), plus on success {ok, R, scale, source, method, ...}. `ok` is False
+    (with a `note`) when no gravity source resolves it — caller falls back to the
+    un-aligned estimate. `scale` is metres per VGGT unit (None for the up-hint
+    path, which does not observe scale)."""
     idx, P_world, src = frame_positions(image_paths)
-    if idx is None:
-        return {"ok": False, "note": "no pose track (need >=3 frames with a fix)"}
-    if len(idx) > len(cameras_glb):
-        return {"ok": False, "note": "more pose fixes than GLB cameras (order mismatch)"}
+    have_poses = idx is not None
 
-    A = np.asarray(cameras_glb, dtype=np.float64)[idx]      # GLB centres, matched
-    B = P_world                                             # true world centres
+    # Degeneracy metrics from the GLB camera constellation — reported ALWAYS so the
+    # caller can gate confidence on flight geometry (Stage 5). collinearity < ~0.05
+    # => cameras on a line (roll/gravity unrecoverable); planarity < ~0.02 => nearly
+    # coplanar (low vertical parallax).
+    A_all = np.asarray(cameras_glb, dtype=np.float64)
+    degen = {}
+    if len(A_all) >= 3:
+        sv_all = np.linalg.svd(A_all - A_all.mean(0), compute_uv=False)
+        degen = {"collinearity": round(float(sv_all[1] / max(sv_all[0], 1e-12)), 4),
+                 "planarity": round(float(sv_all[2] / max(sv_all[0], 1e-12)), 4)}
 
-    # collinearity guard: the GLB camera constellation must span >=2 dimensions
-    # for a rotation to be determined (coplanar is fine; a single line is not).
-    sv = np.linalg.svd(A - A.mean(0), compute_uv=False)
-    if sv[0] < 1e-9 or sv[1] / sv[0] < min_axis_ratio:
-        return {"ok": False, "source": src, "n_frames": int(len(idx)),
-                "note": f"degenerate camera geometry (collinear, axis ratio "
-                        f"{sv[1] / max(sv[0], 1e-12):.3f})"}
+    def _ret(d):
+        d.update(degen)
+        return d
 
-    R, s, t = _umeyama(A, B)
-    resid = A @ (s * R).T + t - B
-    resid_m = float(np.sqrt((resid ** 2).sum(axis=1).mean()))
-    span = float(np.ptp(B[:, [0, 2]]))                      # horizontal baseline
-    resid_rel = resid_m / span if span > 1e-9 else float("inf")
-    if resid_rel > max_resid_rel:
-        return {"ok": False, "source": src, "n_frames": int(len(idx)),
-                "resid_m": round(resid_m, 3), "resid_rel": round(resid_rel, 3),
-                "note": f"poor pose alignment (residual {resid_rel:.2f} of baseline)"}
+    # ---- primary: pose-based Umeyama (needs non-degenerate cameras) ----
+    pose_fail = None
+    if not have_poses:
+        pose_fail = "no pose track (need >=3 frames with a fix)"
+    elif len(idx) > len(cameras_glb):
+        pose_fail = "more pose fixes than GLB cameras (order mismatch)"
+    else:
+        A, B = A_all[idx], P_world
+        sv = np.linalg.svd(A - A.mean(0), compute_uv=False)
+        if sv[0] < 1e-9 or sv[1] / sv[0] < min_axis_ratio:
+            pose_fail = (f"degenerate camera geometry (collinear, axis ratio "
+                         f"{sv[1] / max(sv[0], 1e-12):.3f})")
+        else:
+            R, s, t = _umeyama(A, B)
+            resid = A @ (s * R).T + t - B
+            resid_m = float(np.sqrt((resid ** 2).sum(axis=1).mean()))
+            span = float(np.ptp(B[:, [0, 2]]))                 # horizontal baseline
+            resid_rel = resid_m / span if span > 1e-9 else float("inf")
+            if resid_rel > max_resid_rel:
+                pose_fail = f"poor pose alignment (residual {resid_rel:.2f} of baseline)"
+            else:
+                return _ret({"ok": True, "R": R, "scale": round(float(s), 6),
+                             "source": src, "method": "pose-umeyama",
+                             "n_frames": int(len(idx)), "resid_m": round(resid_m, 3),
+                             "resid_rel": round(resid_rel, 3),
+                             "note": "gravity-aligned via known camera poses"})
 
-    return {"ok": True, "R": R, "source": src, "n_frames": int(len(idx)),
-            "resid_m": round(resid_m, 3), "resid_rel": round(resid_rel, 3),
-            "note": "gravity-aligned via known camera poses"}
+    # ---- fallback: external up-vector (GeoCalib / IMU) rescues degenerate flights ----
+    if up_hint is not None:
+        up = np.asarray(up_hint, dtype=np.float64)
+        up = up.mean(0) if up.ndim == 2 else up
+        return _ret({"ok": True, "R": _rotation_from_up(up), "scale": None,
+                     "source": "external up-vector (GeoCalib/IMU)", "method": "up-hint",
+                     "n_frames": int(len(idx)) if have_poses else 0,
+                     "note": f"gravity from up-vector hint (pose path unusable: {pose_fail})"})
+
+    return _ret({"ok": False, "source": src if have_poses else None,
+                 "n_frames": int(len(idx)) if have_poses else 0, "note": pose_fail})
 
 
 def plot_track(gps, out_png, name=""):

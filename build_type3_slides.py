@@ -107,7 +107,7 @@ any_aligned = any(r.get("gravity_aligned") for r in summary)
 # ── title slide ───────────────────────────────────────────────────────────────
 
 s = prs.slides.add_slide(BLANK)
-band(s, NAVY, SH)                       # full navy background
+band(s, NAVY, 7.5)                      # full navy background (slide height, inches)
 tf = _txt(s, 0.9, 2.4, 11.5, 1.6)
 p = tf.paragraphs[0]; p.text = f"{PREFIX} — Slope Estimation"
 p.font.size = Pt(40); p.font.bold = True; p.font.color.rgb = WHITE
@@ -158,28 +158,36 @@ for r in summary:
     add_image_fit(s, segs, 6.8, 1.35, 6.2, 3.9)
 
     # stats strip
-    tf = _txt(s, 0.5, 5.45, 12.3, 1.9)
+    tf = _txt(s, 0.5, 5.4, 12.3, 2.0)
     aligned = r.get("gravity_aligned")
-    bullet(tf, f"Final (gravity-aligned): {fmt(final,'°')} {direction}"
-               f"    |    Method 1 R² = {fmt(r.get('method1_r2'),'',3)}"
-               f"    |    ground points = {r.get('n_ground_found','—')}",
-           size=15, bold=True, color=NAVY, first=True)
+    conf = (r.get("confidence") or "").lower()
+    conf_color = {"high": TEAL, "medium": RGBColor(0xC9, 0x9A, 0x2E), "low": RUST}.get(conf, GREY)
+    # honest label: only say "gravity-aligned" when it actually was
+    label = "Final (gravity-aligned)" if aligned else "Final (raw VGGT frame, UNCORRECTED)"
+    line1 = (f"{label}: {fmt(final,'°')} {direction}    |    R² = {fmt(r.get('method1_r2'),'',3)}"
+             f"    |    ground pts = {r.get('n_ground_found','—')}")
+    if r.get("plane_slope_deg") is not None:
+        line1 += f"    |    2-D max grade = {fmt(r.get('plane_slope_deg'),'°')}"
+    bullet(tf, line1, size=14, bold=True, color=NAVY, first=True)
+    if conf:
+        bullet(tf, f"Confidence: {conf.upper()} — " + "; ".join(r.get("confidence_reasons", [])),
+               size=12, bold=True, color=conf_color)
     if aligned:
-        bullet(tf, f"Gravity alignment: {r.get('align_source')} — residual "
-                   f"{r.get('align_resid_m')} m over {r.get('align_frames')} frames  "
-                   f"(raw VGGT-frame value was {fmt(r.get('method1_raw_vggt_deg'),'°')}, "
-                   f"in a tilted frame).", size=13, color=GREY)
+        rm = f" ({r.get('rise_m')} m rise / {r.get('run_m')} m run)" if r.get("run_m") else ""
+        bullet(tf, f"Gravity: {r.get('align_source')} via {r.get('align_method')} — residual "
+                   f"{r.get('align_resid_m')} m; raw VGGT value was {fmt(r.get('method1_raw_vggt_deg'),'°')}"
+                   f" in the tilted frame{rm}.", size=12, color=GREY)
     else:
-        bullet(tf, f"Gravity alignment NOT applied ({r.get('align_note')}). "
-                   f"Falling back to: {r.get('estimate_basis')}. Magnitude in VGGT's "
-                   f"tilted frame — treat with caution.", size=13, color=RUST)
+        bullet(tf, f"Gravity alignment NOT applied ({r.get('align_note')}). Number is in VGGT's "
+                   f"tilted frame with sign from the folder label — treat with caution.",
+               size=12, color=RUST)
 
 
 # ── summary table slide ───────────────────────────────────────────────────────
 
 s = prs.slides.add_slide(BLANK)
 header(s, "Summary", "Gravity-aligned vs. raw VGGT-frame")
-cols = ["Flight", "Final (aligned)", "Direction", "Raw VGGT", "R²", "Aligned?", "Resid (m)"]
+cols = ["Flight", "Final", "Dir", "Raw VGGT", "R²", "2-D grade", "Aligned?", "Confidence"]
 rows = len(summary) + 1
 tbl = s.shapes.add_table(rows, len(cols), Inches(0.6), Inches(1.5),
                          Inches(12.1), Inches(0.5 + 0.55 * len(summary))).table
@@ -187,24 +195,30 @@ for j, c in enumerate(cols):
     cell = tbl.cell(0, j); cell.text = c
     cell.fill.solid(); cell.fill.fore_color.rgb = NAVY
     para = cell.text_frame.paragraphs[0]
-    para.font.size = Pt(13); para.font.bold = True; para.font.color.rgb = WHITE
+    para.font.size = Pt(12); para.font.bold = True; para.font.color.rgb = WHITE
+conf_rgb = {"high": TEAL, "medium": RGBColor(0xC9, 0x9A, 0x2E), "low": RUST}
 for i, r in enumerate(summary, start=1):
+    conf = (r.get("confidence") or "—")
     vals = [
         r["dataset"],
         fmt(r.get("final_signed_deg"), "°"),
         r.get("direction", "—"),
         fmt(r.get("method1_raw_vggt_deg"), "°"),
         fmt(r.get("method1_r2"), "", 3),
+        fmt(r.get("plane_slope_deg"), "°"),
         "yes" if r.get("gravity_aligned") else "no",
-        str(r.get("align_resid_m", "—")),
+        conf.upper(),
     ]
     for j, v in enumerate(vals):
         cell = tbl.cell(i, j); cell.text = str(v)
         para = cell.text_frame.paragraphs[0]
-        para.font.size = Pt(12); para.font.color.rgb = INK
+        para.font.size = Pt(11); para.font.color.rgb = INK
         if j == 1:
             para.font.bold = True
             para.font.color.rgb = TEAL if str(v).startswith("+") else RUST
+        if j == 7:
+            para.font.bold = True
+            para.font.color.rgb = conf_rgb.get(conf.lower(), GREY)
 
 note = _txt(s, 0.6, 1.6 + 0.55 * len(summary) + 0.4, 12.1, 1.4)
 bullet(note, "Final = gravity-aligned Method 1 (magnitude + sign from ground-truth poses). "

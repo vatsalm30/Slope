@@ -113,8 +113,46 @@ def _resolve_sign(r, gps, label):
     return r["overall_signed"], "Method 1 (sign unverified)", "VGGT (unverified)"
 
 
+def _assess_confidence(r, align, aligned):
+    """Combine the research's confidence signals into one flag + reasons (Stage 5).
+
+    Note on geometry metrics: a low *planarity* is expected and harmless for any
+    fixed-altitude flight (its cameras are coplanar), so it is reported but NOT
+    scored. *Collinearity* only counts against confidence when it actually
+    prevented alignment — if an up-vector hint rescued a collinear flight, the
+    slope is fine. Returns ("high"|"medium"|"low", [reasons])."""
+    reasons = []
+    r2 = r.get("r2")
+    weak_fit = r2 is not None and np.isfinite(r2) and r2 < 0.5
+
+    if not aligned:
+        reasons.append("no gravity reference — slope measured in VGGT's tilted frame")
+        col = align.get("collinearity")
+        if col is not None and col < 0.05:
+            reasons.append(f"near-collinear cameras (axis ratio {col:.3f}) — pose gravity unrecoverable")
+        if weak_fit:
+            reasons.append(f"weak ground fit (R²={r2:.2f})")
+        return "low", reasons
+
+    level = "high"
+    if weak_fit:
+        reasons.append(f"weak ground fit (R²={r2:.2f})")
+        level = "low"
+    if align.get("method") == "up-hint":
+        reasons.append("gravity from external up-vector (GeoCalib/IMU), not camera poses")
+        level = "medium" if level == "high" else level
+    rr = align.get("resid_rel")
+    if rr is not None and rr > 0.15:
+        reasons.append(f"moderate pose-alignment residual ({rr:.2f} of baseline)")
+        level = "medium" if level == "high" else level
+
+    if not reasons:
+        reasons.append("gravity-aligned, strong fit, non-degenerate geometry")
+    return level, reasons
+
+
 def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robinson",
-                ordered_images=None):
+                ordered_images=None, up_hint=None):
     """Method 1 + pose gravity-anchor + plots + JSON for one GLB (no GPU).
 
     When `ordered_images` (the ORDERED image list fed to VGGT, one per GLB camera)
@@ -134,10 +172,12 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robin
     if n_images is None:
         n_images = raw["n_cams"]
 
-    # Gravity-align the GLB frame to the known camera poses, if we can.
+    # Gravity-align the GLB frame to the known camera poses, if we can. `up_hint`
+    # (a per-image up-vector from GeoCalib or the drone IMU, in the GLB frame) is an
+    # optional fallback that rescues degenerate/collinear flights the poses can't.
     align = {"ok": False, "note": "no ordered image list supplied"}
     if ordered_images:
-        align = gps_anchor.gravity_align(cameras, ordered_images)
+        align = gps_anchor.gravity_align(cameras, ordered_images, up_hint=up_hint)
     aligned = bool(align.get("ok"))
     if aligned:
         R = align["R"]
@@ -169,6 +209,19 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robin
             plot_signed, note = None, ""
     final_dir = "uphill" if final_signed >= 0 else "downhill"
 
+    confidence, conf_reasons = _assess_confidence(r, align, aligned)
+
+    # Metric rise/run — the slope ANGLE is scale-invariant, but with a metric scale
+    # (metres per VGGT unit, from the pose Umeyama fit) we can also report the true
+    # elevation change and horizontal run. Only when pose-aligned (up-hint path has
+    # no scale). Scale/gravity are separable: gravity fixes the angle, scale meters.
+    run_m = rise_m = None
+    scale = align.get("scale")
+    if aligned and scale:
+        s_found = r["s"][r["found"]]
+        run_m = round(float(np.ptp(s_found)) * scale, 2)
+        rise_m = round(run_m * math.tan(math.radians(final_signed)), 2)
+
     out_png = os.path.join(res_dir, f"{prefix}_{name}_method1_segments.png")
     m1.plot_segments(r, out_png, final_signed=plot_signed, sign_note=note)
     m1.plot_profile(r, os.path.join(res_dir, f"{prefix}_{name}_method1_profile.png"),
@@ -184,12 +237,26 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robin
         "method1_r2": round(r["r2"], 4),
         # raw VGGT-frame Method 1 (before gravity alignment) — kept for transparency
         "method1_raw_vggt_deg": round(raw["overall_signed"], 2),
-        # gravity alignment from known camera poses
+        # full 2-D terrain grade (plane fit) — cross-check on the along-track value
+        "plane_slope_deg": round(r["plane_slope_deg"], 2) if np.isfinite(r.get("plane_slope_deg", float("nan"))) else None,
+        "aspect_deg": round(r["aspect_deg"], 1) if np.isfinite(r.get("aspect_deg", float("nan"))) else None,
+        # gravity alignment from known camera poses (or external up-vector)
         "gravity_aligned": aligned,
+        "align_method": align.get("method"),
         "align_source": align.get("source"),
         "align_resid_m": align.get("resid_m"),
         "align_frames": align.get("n_frames"),
         "align_note": align.get("note"),
+        # flight-geometry degeneracy metrics (Stage 5 gating)
+        "collinearity": align.get("collinearity"),
+        "planarity": align.get("planarity"),
+        # metric scale + rise/run (None unless pose-aligned with a metric fit)
+        "scale_m_per_unit": scale,
+        "run_m": run_m,
+        "rise_m": rise_m,
+        # consolidated confidence flag + reasons
+        "confidence": confidence,
+        "confidence_reasons": conf_reasons,
         # gravity-true anchor track, if available (EXIF GPS or sim ground-truth pose)
         "gps_available": bool(gps and gps.get("ok")),
         "anchor_source": gps.get("source") if (gps and gps.get("ok")) else None,
@@ -220,7 +287,11 @@ def analyze_glb(glb_path, name, n_images=None, images_folder=None, prefix="robin
     if gps and gps.get("ok"):
         print(f"  {gps['source']:<15s}: {gps['signed_deg']:+.2f}° {gps['direction']} "
               f"(R²={gps['r2']:.3f}, {gps['n_with_gps']} frames)")
+    if np.isfinite(r.get("plane_slope_deg", float("nan"))):
+        extra = f" ({run_m} m run, {rise_m} m rise)" if run_m is not None else ""
+        print(f"  plane grade    : {r['plane_slope_deg']:.2f}° max (2-D cross-check){extra}")
     print(f"  → FINAL        : {final_signed:+.2f}° {final_dir}   [{basis}]")
+    print(f"  confidence     : {confidence.upper()} — {'; '.join(conf_reasons)}")
     return rec
 
 

@@ -89,6 +89,40 @@ raw-VGGT-frame magnitudes.)
 - `<prefix>_summary.json`               — all flights for that run
 - `output_glbs/vggt/<prefix>_<flight>.glb`
 
+## Method notes (research-backed)
+
+Recovering true **down** (gravity) is the crux — VGGT returns geometry in camera-0's
+tilted frame, so slope read directly off it can be off by tens of degrees. The
+pipeline resolves gravity in this priority:
+
+1. **Pose Umeyama** (default) — align GLB camera centres to the filename poses.
+   Needs a non-collinear camera constellation.
+2. **External up-vector** (`up_hint` → `gravity_align`) — a per-image up-vector from
+   **GeoCalib** (ECCV 2024, single-image up + intrinsics) or the drone **IMU/attitude**.
+   One up-vector is enough to fix slope, so this rescues the straight-line / nadir
+   flights that pose-alignment can't (e.g. N75E_type3). Not wired to a model yet —
+   pass `up_hint` when you have GeoCalib/IMU up-vectors in the GLB frame.
+
+**Acquisition matters more than the model.** Straight-line, fixed-altitude, nadir-only
+flights are near-collinear/planar — a degeneracy that destroys roll (hence gravity and
+slope). Per UAV-SfM literature (Nesbit & Hugenholtz 2019), fly a **cross-hatch/double
+grid with oblique passes (20–35° off-nadir) and varied altitude**; that adds the
+parallax needed to constrain gravity. Each result now reports `collinearity` (2nd/1st
+camera singular value; <0.05 ⇒ degenerate) so you can reject/refly.
+
+**Scale vs gravity are separable:** gravity fixes the *angle* and sign; metric scale
+(from the pose Umeyama fit) only adds `rise_m`/`run_m`. For a slope angle you don't
+need meters.
+
+**New JSON fields:** `plane_slope_deg`/`aspect_deg` (full 2-D grade from a plane fit,
+a cross-check on the along-track value), `collinearity`/`planarity`, `align_method`
+(`pose-umeyama` | `up-hint`), `scale_m_per_unit`, `run_m`/`rise_m`, and a consolidated
+`confidence` (high/medium/low) + `confidence_reasons`. Gate on `confidence`.
+
+Not a drop-in for photogrammetry: on aerial blocks VGGT still lags COLMAP/MVS — treat
+the pure-image slope as an estimate with an attached confidence, and keep a classical
+SfM+MVS path as the accuracy reference for anything survey-grade.
+
 ## Notes / gotchas
 
 - `sagamore_0708/slope_4_fixed_altitude_uphill/` contains a stray `_` folder; in
