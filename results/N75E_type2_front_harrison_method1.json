@@ -1,0 +1,204 @@
+{
+  "dataset": "type2_front_harrison",
+  "glb": "N75E_type2_front_harrison.glb",
+  "n_images": 32,
+  "n_ground_found": 32,
+  "method1_signed_deg": -0.3,
+  "method1_r2": 0.6977,
+  "gps_available": true,
+  "anchor_source": "sim ground-truth pose",
+  "gps_signed_deg": 0.02,
+  "gps_r2": 0.0518,
+  "final_signed_deg": -0.3,
+  "direction": "downhill",
+  "sign_source": "VGGT (unverified)",
+  "estimate_basis": "Method 1 (sign unverified)",
+  "segments": [
+    {
+      "label": "1\u21922",
+      "signed_slope": -0.16,
+      "horiz_m": 0.06,
+      "dY_m": 0.0
+    },
+    {
+      "label": "2\u21923",
+      "signed_slope": -2.85,
+      "horiz_m": 0.041,
+      "dY_m": 0.002
+    },
+    {
+      "label": "3\u21924",
+      "signed_slope": -2.19,
+      "horiz_m": 0.047,
+      "dY_m": 0.002
+    },
+    {
+      "label": "4\u21925",
+      "signed_slope": -0.71,
+      "horiz_m": 0.108,
+      "dY_m": 0.001
+    },
+    {
+      "label": "5\u21926",
+      "signed_slope": 0.02,
+      "horiz_m": 0.178,
+      "dY_m": -0.0
+    },
+    {
+      "label": "6\u21927",
+      "signed_slope": 0.34,
+      "horiz_m": 0.041,
+      "dY_m": -0.0
+    },
+    {
+      "label": "7\u21928",
+      "signed_slope": 0.49,
+      "horiz_m": 0.07,
+      "dY_m": -0.001
+    },
+    {
+      "label": "8\u21929",
+      "signed_slope": 0.4,
+      "horiz_m": 0.109,
+      "dY_m": -0.001
+    },
+    {
+      "label": "9\u219210",
+      "signed_slope": -0.42,
+      "horiz_m": 0.216,
+      "dY_m": 0.002
+    },
+    {
+      "label": "10\u219211",
+      "signed_slope": -1.74,
+      "horiz_m": 0.045,
+      "dY_m": 0.001
+    },
+    {
+      "label": "11\u219212",
+      "signed_slope": -0.36,
+      "horiz_m": 0.106,
+      "dY_m": 0.001
+    },
+    {
+      "label": "12\u219213",
+      "signed_slope": -0.79,
+      "horiz_m": 0.139,
+      "dY_m": 0.002
+    },
+    {
+      "label": "13\u219214",
+      "signed_slope": 0.12,
+      "horiz_m": 0.072,
+      "dY_m": -0.0
+    },
+    {
+      "label": "14\u219215",
+      "signed_slope": -0.63,
+      "horiz_m": 0.049,
+      "dY_m": 0.001
+    },
+    {
+      "label": "15\u219216",
+      "signed_slope": 0.03,
+      "horiz_m": 0.208,
+      "dY_m": -0.0
+    },
+    {
+      "label": "16\u219217",
+      "signed_slope": -0.55,
+      "horiz_m": 0.048,
+      "dY_m": 0.0
+    },
+    {
+      "label": "17\u219218",
+      "signed_slope": 0.37,
+      "horiz_m": 0.049,
+      "dY_m": -0.0
+    },
+    {
+      "label": "18\u219219",
+      "signed_slope": 0.01,
+      "horiz_m": 0.279,
+      "dY_m": -0.0
+    },
+    {
+      "label": "19\u219220",
+      "signed_slope": 0.26,
+      "horiz_m": 0.123,
+      "dY_m": -0.001
+    },
+    {
+      "label": "20\u219221",
+      "signed_slope": 0.09,
+      "horiz_m": 0.215,
+      "dY_m": -0.0
+    },
+    {
+      "label": "21\u219222",
+      "signed_slope": 0.06,
+      "horiz_m": 0.129,
+      "dY_m": -0.0
+    },
+    {
+      "label": "22\u219223",
+      "signed_slope": 0.23,
+      "horiz_m": 0.011,
+      "dY_m": -0.0
+    },
+    {
+      "label": "23\u219224",
+      "signed_slope": 1.37,
+      "horiz_m": 0.05,
+      "dY_m": -0.001
+    },
+    {
+      "label": "24\u219225",
+      "signed_slope": -0.73,
+      "horiz_m": 0.087,
+      "dY_m": 0.001
+    },
+    {
+      "label": "25\u219226",
+      "signed_slope": -0.09,
+      "horiz_m": 0.191,
+      "dY_m": 0.0
+    },
+    {
+      "label": "26\u219227",
+      "signed_slope": -1.4,
+      "horiz_m": 0.027,
+      "dY_m": 0.001
+    },
+    {
+      "label": "27\u219228",
+      "signed_slope": -0.17,
+      "horiz_m": 0.078,
+      "dY_m": 0.0
+    },
+    {
+      "label": "28\u219229",
+      "signed_slope": 0.1,
+      "horiz_m": 0.133,
+      "dY_m": -0.0
+    },
+    {
+      "label": "29\u219230",
+      "signed_slope": 3.14,
+      "horiz_m": 0.007,
+      "dY_m": -0.0
+    },
+    {
+      "label": "30\u219231",
+      "signed_slope": -0.15,
+      "horiz_m": 0.268,
+      "dY_m": 0.001
+    },
+    {
+      "label": "31\u219232",
+      "signed_slope": 8.57,
+      "horiz_m": 0.008,
+      "dY_m": -0.001
+    }
+  ]
+}

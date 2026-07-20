@@ -1,0 +1,204 @@
+{
+  "dataset": "type1_front_N75E",
+  "glb": "N75E_type1_front_N75E.glb",
+  "n_images": 32,
+  "n_ground_found": 32,
+  "method1_signed_deg": -4.08,
+  "method1_r2": 0.9747,
+  "gps_available": true,
+  "anchor_source": "sim ground-truth pose",
+  "gps_signed_deg": -3.24,
+  "gps_r2": 0.8367,
+  "final_signed_deg": -4.08,
+  "direction": "downhill",
+  "sign_source": "sim ground-truth pose",
+  "estimate_basis": "Method 1 magnitude, sim ground-truth pose sign",
+  "segments": [
+    {
+      "label": "1\u21922",
+      "signed_slope": -4.86,
+      "horiz_m": 0.08,
+      "dY_m": 0.007
+    },
+    {
+      "label": "2\u21923",
+      "signed_slope": -0.14,
+      "horiz_m": 0.142,
+      "dY_m": 0.0
+    },
+    {
+      "label": "3\u21924",
+      "signed_slope": -3.32,
+      "horiz_m": 0.078,
+      "dY_m": 0.005
+    },
+    {
+      "label": "4\u21925",
+      "signed_slope": -2.48,
+      "horiz_m": 0.078,
+      "dY_m": 0.003
+    },
+    {
+      "label": "5\u21926",
+      "signed_slope": -2.24,
+      "horiz_m": 0.015,
+      "dY_m": 0.001
+    },
+    {
+      "label": "6\u21927",
+      "signed_slope": -2.29,
+      "horiz_m": 0.041,
+      "dY_m": 0.002
+    },
+    {
+      "label": "7\u21928",
+      "signed_slope": -0.52,
+      "horiz_m": 0.152,
+      "dY_m": 0.001
+    },
+    {
+      "label": "8\u21929",
+      "signed_slope": -2.82,
+      "horiz_m": 0.03,
+      "dY_m": 0.001
+    },
+    {
+      "label": "9\u219210",
+      "signed_slope": -3.78,
+      "horiz_m": 0.042,
+      "dY_m": 0.003
+    },
+    {
+      "label": "10\u219211",
+      "signed_slope": -3.45,
+      "horiz_m": 0.139,
+      "dY_m": 0.008
+    },
+    {
+      "label": "11\u219212",
+      "signed_slope": -7.62,
+      "horiz_m": 0.015,
+      "dY_m": 0.002
+    },
+    {
+      "label": "12\u219213",
+      "signed_slope": -2.96,
+      "horiz_m": 0.07,
+      "dY_m": 0.004
+    },
+    {
+      "label": "13\u219214",
+      "signed_slope": -0.5,
+      "horiz_m": 0.053,
+      "dY_m": 0.0
+    },
+    {
+      "label": "14\u219215",
+      "signed_slope": -3.64,
+      "horiz_m": 0.078,
+      "dY_m": 0.005
+    },
+    {
+      "label": "15\u219216",
+      "signed_slope": -1.64,
+      "horiz_m": 0.107,
+      "dY_m": 0.003
+    },
+    {
+      "label": "16\u219217",
+      "signed_slope": -6.27,
+      "horiz_m": 0.098,
+      "dY_m": 0.011
+    },
+    {
+      "label": "17\u219218",
+      "signed_slope": -14.85,
+      "horiz_m": 0.102,
+      "dY_m": 0.027
+    },
+    {
+      "label": "18\u219219",
+      "signed_slope": -0.83,
+      "horiz_m": 0.177,
+      "dY_m": 0.003
+    },
+    {
+      "label": "19\u219220",
+      "signed_slope": -2.19,
+      "horiz_m": 0.118,
+      "dY_m": 0.005
+    },
+    {
+      "label": "20\u219221",
+      "signed_slope": -4.88,
+      "horiz_m": 0.053,
+      "dY_m": 0.005
+    },
+    {
+      "label": "21\u219222",
+      "signed_slope": -2.84,
+      "horiz_m": 0.053,
+      "dY_m": 0.003
+    },
+    {
+      "label": "22\u219223",
+      "signed_slope": -0.78,
+      "horiz_m": 0.209,
+      "dY_m": 0.003
+    },
+    {
+      "label": "23\u219224",
+      "signed_slope": 0.89,
+      "horiz_m": 0.153,
+      "dY_m": -0.002
+    },
+    {
+      "label": "24\u219225",
+      "signed_slope": 3.0,
+      "horiz_m": 0.077,
+      "dY_m": -0.004
+    },
+    {
+      "label": "25\u219226",
+      "signed_slope": 4.13,
+      "horiz_m": 0.025,
+      "dY_m": -0.002
+    },
+    {
+      "label": "26\u219227",
+      "signed_slope": 0.99,
+      "horiz_m": 0.23,
+      "dY_m": -0.004
+    },
+    {
+      "label": "27\u219228",
+      "signed_slope": 4.46,
+      "horiz_m": 0.02,
+      "dY_m": -0.002
+    },
+    {
+      "label": "28\u219229",
+      "signed_slope": 7.23,
+      "horiz_m": 0.215,
+      "dY_m": -0.027
+    },
+    {
+      "label": "29\u219230",
+      "signed_slope": 4.42,
+      "horiz_m": 0.29,
+      "dY_m": -0.022
+    },
+    {
+      "label": "30\u219231",
+      "signed_slope": 3.87,
+      "horiz_m": 0.258,
+      "dY_m": -0.017
+    },
+    {
+      "label": "31\u219232",
+      "signed_slope": 2.17,
+      "horiz_m": 0.211,
+      "dY_m": -0.008
+    }
+  ]
+}
