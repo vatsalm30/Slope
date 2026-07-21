@@ -1,6 +1,3 @@
-/N75E_0712/
-/sagamore_0708/
-
 # editor / OS / python junk — stop committing these
 __pycache__/
 *.pyc
