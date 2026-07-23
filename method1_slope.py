@@ -52,10 +52,16 @@ def load_glb(glb_path):
 
 
 def flight_direction(pts_xz, cameras_xz):
-    """Principal horizontal direction, oriented from first camera to last."""
-    _, _, Vt = np.linalg.svd(pts_xz - pts_xz.mean(0), full_matrices=False)
+    """Principal horizontal direction, oriented from first camera to last.
+    Robust to non-finite points (a collapsed reconstruction can emit NaN/Inf)."""
+    finite = np.isfinite(pts_xz).all(axis=1)
+    P = pts_xz[finite]
+    if len(P) < 2 or np.ptp(P, axis=0).max() < 1e-12:
+        return np.array([1.0, 0.0])                 # no usable spread
+    _, _, Vt = np.linalg.svd(P - P.mean(0), full_matrices=False)
     fd = Vt[0]
-    if (cameras_xz[-1] - cameras_xz[0]) @ fd < 0:   # point it the way the drone flew
+    cf = cameras_xz[np.isfinite(cameras_xz).all(axis=1)]
+    if len(cf) >= 2 and (cf[-1] - cf[0]) @ fd < 0:  # point it the way the drone flew
         fd = -fd
     return fd
 
@@ -114,11 +120,21 @@ def analyse_arrays(terrain, cameras, name="glb"):
     fd = flight_direction(cameras[:, [0, 2]], cameras[:, [0, 2]])
     s  = (ground_pts[:, [0, 2]] - ground_pts[:, [0, 2]].mean(0)) @ fd
 
-    # overall slope: least-squares line of ground-Y vs along-track distance
-    grad, intcpt = np.polyfit(s[found], ground_pts[found, 1], 1)
-    yhat = grad * s[found] + intcpt
-    ss_res = np.sum((ground_pts[found, 1] - yhat) ** 2)
-    ss_tot = np.sum((ground_pts[found, 1] - ground_pts[found, 1].mean()) ** 2)
+    # overall slope: least-squares line of ground-Y vs along-track distance.
+    # Guard degenerate geometry (no camera spread) and NaN/Inf points that a
+    # collapsed reconstruction produces — otherwise np.polyfit's SVD hard-fails.
+    fit_ok = found & np.isfinite(s) & np.isfinite(ground_pts[:, 1])
+    if fit_ok.sum() < 2 or np.ptp(s[fit_ok]) < 1e-9:
+        return {"name": name, "ok": False, "n_cams": len(cameras),
+                "reason": "degenerate along-track geometry (no camera spread / non-finite points)"}
+    try:
+        grad, intcpt = np.polyfit(s[fit_ok], ground_pts[fit_ok, 1], 1)
+    except np.linalg.LinAlgError:
+        return {"name": name, "ok": False, "n_cams": len(cameras),
+                "reason": "least-squares slope fit did not converge"}
+    yhat = grad * s[fit_ok] + intcpt
+    ss_res = np.sum((ground_pts[fit_ok, 1] - yhat) ** 2)
+    ss_tot = np.sum((ground_pts[fit_ok, 1] - ground_pts[fit_ok, 1].mean()) ** 2)
     r2 = 1 - ss_res / ss_tot if ss_tot > 1e-12 else float("nan")
 
     # +Y down: grad>0 → ground descends forward → downhill → negative signed slope
@@ -167,9 +183,13 @@ def plane_slope(ground_pts, found):
     A large gap between the two means the flight ran across the slope rather than
     up/down the fall line; NaN if fewer than 3 ground points."""
     g = ground_pts[found]
-    if len(g) < 3:
+    g = g[np.isfinite(g).all(axis=1)]               # drop NaN/Inf from a bad reconstruction
+    if len(g) < 3 or np.ptp(g, axis=0).max() < 1e-12:
         return float("nan"), float("nan")
-    _, _, Vt = np.linalg.svd(g - g.mean(0), full_matrices=False)
+    try:
+        _, _, Vt = np.linalg.svd(g - g.mean(0), full_matrices=False)
+    except np.linalg.LinAlgError:
+        return float("nan"), float("nan")
     n = Vt[-1]                                          # unit plane normal
     n = n / (np.linalg.norm(n) + 1e-12)
     max_slope = float(np.degrees(np.arccos(min(1.0, abs(n[1])))))   # tilt from vertical

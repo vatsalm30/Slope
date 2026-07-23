@@ -335,19 +335,24 @@ def run_one(models, flight, images, k, out_root, backends, from_glb, up_hint=Non
     out = {}
     for backend in backends:
         glb_path = os.path.join(kdir, f"{backend}.glb")
-        if not from_glb and not os.path.exists(glb_path):
-            if backend == "vggt":
-                import run_vggt_all as rv
-                rv.run_glb(models["vggt"], subset, glb_path)
-            elif backend == "dav3":
-                import run_dav3_all as rd
-                rd.run_glb(models["dav3"], subset, glb_path)
-        if not os.path.exists(glb_path):
-            out[backend] = {"ok": False, "reason": "no GLB (reconstruction skipped/failed)"}
-            _write_text_report(os.path.join(kdir, f"output_{backend}.txt"), flight, k, backend, out[backend])
-            continue
-        rec = analyse_reconstruction(glb_path, subset, os.path.join(kdir, backend),
-                                     up_hint=up_hint, backend=backend)
+        # Any single (flight, k, backend) failure — reconstruction crash, degenerate
+        # geometry, SVD non-convergence — is caught here so the sweep keeps going.
+        try:
+            if not from_glb and not os.path.exists(glb_path):
+                if backend == "vggt":
+                    import run_vggt_all as rv
+                    rv.run_glb(models["vggt"], subset, glb_path)
+                elif backend == "dav3":
+                    import run_dav3_all as rd
+                    rd.run_glb(models["dav3"], subset, glb_path)
+            if not os.path.exists(glb_path):
+                rec = {"ok": False, "reason": "no GLB (reconstruction skipped/failed)"}
+            else:
+                rec = analyse_reconstruction(glb_path, subset, os.path.join(kdir, backend),
+                                             up_hint=up_hint, backend=backend)
+        except Exception as e:                       # noqa: BLE001 — keep the batch alive
+            rec = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+
         rec.update({"flight": flight, "k": k, "glb": os.path.relpath(glb_path, out_root)})
         with open(os.path.join(kdir, f"{backend}_slope.json"), "w") as f:
             json.dump(rec, f, indent=2)
