@@ -317,7 +317,7 @@ def _write_text_report(txt_path, flight, k, backend, rec):
             f"metric            : scale={rec['scale_m_per_unit']} m/unit, run={rec['run_m']} m, rise={rec['rise_m']} m",
             f"CONFIDENCE        : {rec['confidence'].upper()} — {'; '.join(rec['confidence_reasons'])}",
         ]
-    with open(txt_path, "w") as f:
+    with open(txt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
 
@@ -329,7 +329,7 @@ def run_one(models, flight, images, k, out_root, backends, from_glb, up_hint=Non
     subset = images[:k]
     kdir = os.path.join(out_root, "process", flight, f"k{k:02d}")
     os.makedirs(kdir, exist_ok=True)
-    with open(os.path.join(kdir, "input.txt"), "w") as f:
+    with open(os.path.join(kdir, "input.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(os.path.basename(p) for p in subset) + "\n")
 
     out = {}
@@ -354,7 +354,7 @@ def run_one(models, flight, images, k, out_root, backends, from_glb, up_hint=Non
             rec = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
 
         rec.update({"flight": flight, "k": k, "glb": os.path.relpath(glb_path, out_root)})
-        with open(os.path.join(kdir, f"{backend}_slope.json"), "w") as f:
+        with open(os.path.join(kdir, f"{backend}_slope.json"), "w", encoding="utf-8") as f:
             json.dump(rec, f, indent=2)
         _write_text_report(os.path.join(kdir, f"output_{backend}.txt"), flight, k, backend, rec)
         out[backend] = rec
@@ -419,11 +419,11 @@ def run_pipeline(root, out_root, backends, from_glb, kmin, kmax, kstep, max_fram
         rec = {"flight": name, "n_images": N, "ks": ks, "convergence": conv}
         fdir = os.path.join(out_root, "process", name)
         os.makedirs(fdir, exist_ok=True)
-        with open(os.path.join(fdir, f"{name}_summary.json"), "w") as f:
+        with open(os.path.join(fdir, f"{name}_summary.json"), "w", encoding="utf-8") as f:
             json.dump(rec, f, indent=2)
         summary.append(rec)
 
-    with open(os.path.join(out_root, "pipeline_summary.json"), "w") as f:
+    with open(os.path.join(out_root, "pipeline_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(f"\nDone. Per-flight outputs in {os.path.join(out_root, 'process')}")
     print(f"Overall summary → {os.path.join(out_root, 'pipeline_summary.json')}")
